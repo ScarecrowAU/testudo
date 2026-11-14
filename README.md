@@ -2,7 +2,20 @@
 
 Native GUI test runner that controls, monitors and reports on multiple concurrent test suites, with live views of the headless browsers they drive.
 
-Current targets: Playwright, plus Vitest browser mode (which covers Storybook's `addon-vitest`). Planned: Jest, Rstest, then non-JS runners (Go, Rust).
+## Compatibility
+
+| Test system | Status | Found by | Results & steps | Live browser view & recording | Re-run one test | Tested with |
+|---|---|---|---|---|---|---|
+| [Playwright Test](https://playwright.dev) | ✅ Supported | `playwright.config.*` | ✅ tests, steps, skip reasons, pending tests | ✅ every page | ✅ `file:line` + `--project` | 1.60, 1.64 |
+| [Vitest](https://vitest.dev) (3+) | ✅ Supported | `vitest.config.*`, workspaces, `vite.config.*` with `test` | ✅ tests, skip reasons, pending tests | ✅ browser mode (Playwright provider) | ✅ `file:line` | 4.1 |
+| [Storybook](https://storybook.js.org) | ✅ Supported, via Vitest or Playwright | as above | ✅ | ✅ | ✅ | `addon-vitest`; Playwright-based story suites |
+| [Jest](https://jestjs.io) | 🗓️ Planned | | | (no browser) | | |
+| [Bun](https://bun.sh/docs/cli/test) (`bun test`) | 🗓️ Planned | | | (no browser) | | |
+| [Rstest](https://rstest.rs) | 🗓️ Planned | | | | | |
+| Go (`go test`) | 🗓️ Planned | `go.mod` (listed, not runnable yet) | | (no browser) | | |
+| Rust (`cargo test`) | 🗓️ Planned | | | (no browser) | | |
+
+Live views need a browser to drive: Playwright pages and Vitest browser mode. Chromium is captured on every supported Playwright version; Firefox and WebKit only where Playwright has its cross-browser `page.screencast` API (recent versions, not yet tested). Each suite uses the runner version installed in its own project, so a monorepo can mix versions.
 
 ## How it works
 
