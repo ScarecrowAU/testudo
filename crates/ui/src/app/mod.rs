@@ -1202,7 +1202,13 @@ impl TestudoApp {
                 let collapsed = view.collapsed_runs.contains(&run.id);
                 let run_id = run.id.clone();
                 let toggle_id = run.id.clone();
+                // The selected run (its output is in the Output tab) gets an
+                // accent bar down its header and counts, not a fill behind
+                // the label.
                 let mut header = line()
+                    .border_l_2()
+                    .pl_1()
+                    .border_color(if selected { theme.blue } else { gpui_kit::transparent_black() })
                     .gap_1()
                     .child(
                         div()
@@ -1236,7 +1242,6 @@ impl TestudoApp {
                             .rounded_sm()
                             .font_weight(FontWeight::SEMIBOLD)
                             .cursor_pointer()
-                            .when(selected, |d| d.bg(theme.list_active))
                             .hover(|d| d.bg(theme.list_hover))
                             .child(run.label.clone())
                             .tooltip(tooltip_text("show this run's output"))
@@ -1276,7 +1281,11 @@ impl TestudoApp {
                 let Some(run) = view.model.runs.get(ri) else { return line().into_any_element() };
                 let (passed, failed, running) = run.counts();
                 let total = run.total_tests.map(|t| format!(" of {t}")).unwrap_or_default();
+                let selected = view.selected_run.as_deref() == Some(&run.id);
                 line()
+                    .border_l_2()
+                    .pl_1()
+                    .border_color(if selected { theme.blue } else { gpui_kit::transparent_black() })
                     .gap_1()
                     .when(passed > 0, |d| d.child(pill(format!("✔ {passed}"), theme.green)))
                     .when(failed > 0, |d| d.child(pill(format!("✘ {failed}"), theme.red)))
