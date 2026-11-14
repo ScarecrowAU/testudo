@@ -1,8 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=Testudo
-GenericName=Test Runner
-Comment=Watch your tests, not your terminal. Run, watch and replay Playwright, Vitest and Storybook suites
+Comment=Watch your tests, not your terminal.
 Exec=testudo
 Icon=testudo
 StartupWMClass=testudo
