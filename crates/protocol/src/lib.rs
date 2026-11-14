@@ -12,7 +12,8 @@
 //! JSON uses camelCase field names and a `type` tag. The JS side lives in
 //! `adapters/js/transport.mjs` and must stay in sync with this file.
 
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
+pub use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -179,6 +180,13 @@ pub enum Event {
     },
 
     // --- emitted by the core itself, never by adapters ---
+    RunStarted {
+        label: String,
+        runner: String,
+        cwd: String,
+        #[serde(default)]
+        args: Vec<String>,
+    },
     Stdio {
         stream: StdStream,
         line: String,

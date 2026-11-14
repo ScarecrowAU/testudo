@@ -3,11 +3,13 @@
 
 pub mod hub;
 pub mod ingest;
+pub mod node_env;
+pub mod procs;
 pub mod runner;
 
-pub use hub::{Hub, HubMessage, RunId};
+pub use hub::{Hub, HubMessage, RunId, now_ms};
 pub use ingest::IngestServer;
-pub use runner::{Orchestrator, RunHandle, RunSpec, RunnerKind};
+pub use runner::{CANCEL_GRACE, Orchestrator, RunHandle, RunSpec, RunnerKind};
 
 use std::path::PathBuf;
 

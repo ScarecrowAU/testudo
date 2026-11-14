@@ -8,19 +8,19 @@ use std::collections::HashMap;
 use std::sync::mpsc as std_mpsc;
 
 use testudo_core::Hub;
-use testudo_protocol::{Event, FrameHeader, Message};
+use testudo_protocol::{Event, Message};
 use tokio::sync::mpsc;
 
 use crate::model::PageKey;
 
 pub enum UiMsg {
-    Event { run_id: String, event: Event },
-    Frame { key: PageKey, ts: f64, image: egui::ColorImage },
+    Event { run_id: String, at: f64, event: Event },
+    Frame { key: PageKey, at: f64, image: egui::ColorImage },
 }
 
 struct Slot {
     busy: bool,
-    pending: Option<(FrameHeader, bytes::Bytes)>,
+    pending: Option<(f64, bytes::Bytes)>,
 }
 
 pub fn spawn(rt: &tokio::runtime::Handle, hub: &Hub, ctx: egui::Context) -> std_mpsc::Receiver<UiMsg> {
@@ -31,17 +31,13 @@ pub fn spawn(rt: &tokio::runtime::Handle, hub: &Hub, ctx: egui::Context) -> std_
         let (done_tx, mut done_rx) = mpsc::unbounded_channel::<PageKey>();
         let mut slots: HashMap<PageKey, Slot> = HashMap::new();
 
-        let start_decode = |key: PageKey, header: FrameHeader, jpeg: bytes::Bytes| {
+        let start_decode = |key: PageKey, at: f64, jpeg: bytes::Bytes| {
             let ui_tx = ui_tx.clone();
             let done_tx = done_tx.clone();
             let ctx = ctx.clone();
             tokio::task::spawn_blocking(move || {
                 if let Some(image) = decode_jpeg(&jpeg) {
-                    let _ = ui_tx.send(UiMsg::Frame {
-                        key: key.clone(),
-                        ts: header.ts,
-                        image,
-                    });
+                    let _ = ui_tx.send(UiMsg::Frame { key: key.clone(), at, image });
                     ctx.request_repaint();
                 }
                 let _ = done_tx.send(key);
@@ -54,7 +50,7 @@ pub fn spawn(rt: &tokio::runtime::Handle, hub: &Hub, ctx: egui::Context) -> std_
                     let Some(msg) = msg else { break };
                     match msg.message {
                         Message::Event(event) => {
-                            if ui_tx.send(UiMsg::Event { run_id: msg.run_id, event }).is_err() {
+                            if ui_tx.send(UiMsg::Event { run_id: msg.run_id, at: msg.at, event }).is_err() {
                                 break;
                             }
                             ctx.request_repaint();
@@ -63,10 +59,10 @@ pub fn spawn(rt: &tokio::runtime::Handle, hub: &Hub, ctx: egui::Context) -> std_
                             let key = PageKey { run_id: msg.run_id, page_id: header.page_id.clone() };
                             let slot = slots.entry(key.clone()).or_insert(Slot { busy: false, pending: None });
                             if slot.busy {
-                                slot.pending = Some((header, jpeg));
+                                slot.pending = Some((msg.at, jpeg));
                             } else {
                                 slot.busy = true;
-                                start_decode(key, header, jpeg);
+                                start_decode(key, msg.at, jpeg);
                             }
                         }
                     }
@@ -74,7 +70,7 @@ pub fn spawn(rt: &tokio::runtime::Handle, hub: &Hub, ctx: egui::Context) -> std_
                 Some(key) = done_rx.recv() => {
                     if let Some(slot) = slots.get_mut(&key) {
                         match slot.pending.take() {
-                            Some((header, jpeg)) => start_decode(key, header, jpeg),
+                            Some((at, jpeg)) => start_decode(key, at, jpeg),
                             None => { slots.remove(&key); }
                         }
                     }
@@ -86,7 +82,7 @@ pub fn spawn(rt: &tokio::runtime::Handle, hub: &Hub, ctx: egui::Context) -> std_
     ui_rx
 }
 
-fn decode_jpeg(jpeg: &[u8]) -> Option<egui::ColorImage> {
+pub fn decode_jpeg(jpeg: &[u8]) -> Option<egui::ColorImage> {
     let img = image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg)
         .ok()?
         .to_rgb8();

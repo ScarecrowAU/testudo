@@ -25,6 +25,7 @@ impl IngestServer {
         let dir = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
+        remove_stale_sockets(&dir);
         let path = dir.join(format!("testudo-{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path)
@@ -58,6 +59,37 @@ impl Drop for IngestServer {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
     }
+}
+
+/// Delete sockets left by Testudo processes that died without cleaning up
+/// (crash, SIGKILL). The pid is in the file name.
+fn remove_stale_sockets(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix("testudo-"))
+            .and_then(|n| n.strip_suffix(".sock"))
+            .and_then(|n| n.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        if !pid_alive(pid) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+#[cfg(unix)]
+fn pid_alive(pid: i32) -> bool {
+    // SAFETY: signal 0 only checks for existence.
+    unsafe { libc::kill(pid, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
+}
+
+#[cfg(not(unix))]
+fn pid_alive(_pid: i32) -> bool {
+    true
 }
 
 async fn handle_connection(mut stream: UnixStream, hub: Hub) -> Result<()> {

@@ -1,11 +1,10 @@
 //! GUI-side state built from the hub's message stream.
 
 use std::collections::HashMap;
-use std::time::Instant;
 
 use egui::TextureHandle;
 use egui_tiles::TileId;
-use testudo_core::{RunHandle, RunId};
+use testudo_core::RunId;
 use testudo_protocol::{Event, NetworkPhase, StdStream, TestStatus};
 
 const MAX_LINES: usize = 5_000;
@@ -25,7 +24,6 @@ pub struct Model {
 pub struct Run {
     pub id: RunId,
     pub label: String,
-    pub handle: Option<RunHandle>,
     pub exit: Option<Option<i32>>,
     pub run_end: Option<String>,
     pub total_tests: Option<u32>,
@@ -54,7 +52,7 @@ impl Run {
         for t in &self.tests {
             match t.status {
                 Some(TestStatus::Passed) => passed += 1,
-                Some(TestStatus::Failed | TestStatus::TimedOut | TestStatus::Interrupted) => failed += 1,
+                Some(TestStatus::Failed | TestStatus::TimedOut) => failed += 1,
                 None => running += 1,
                 _ => {}
             }
@@ -83,7 +81,8 @@ pub struct Page {
     pub texture: Option<TextureHandle>,
     pub last_frame_ts: f64,
     pub frame_count: u64,
-    pub closed_at: Option<Instant>,
+    /// Event time (ms since epoch) the page closed.
+    pub closed_at: Option<f64>,
     pub tile: Option<TileId>,
     pub network: Vec<NetRow>,
     pub console: Vec<ConsoleRow>,
@@ -119,11 +118,13 @@ impl Model {
         }
     }
 
-    pub fn add_run(&mut self, handle: RunHandle, label: String) {
+    fn ensure_run(&mut self, id: &str) -> &mut Run {
+        if let Some(i) = self.runs.iter().position(|r| r.id == id) {
+            return &mut self.runs[i];
+        }
         self.runs.push(Run {
-            id: handle.id.clone(),
-            label,
-            handle: Some(handle),
+            id: id.to_owned(),
+            label: id.to_owned(),
             exit: None,
             run_end: None,
             total_tests: None,
@@ -131,14 +132,11 @@ impl Model {
             stdio: Vec::new(),
             adapter_logs: Vec::new(),
         });
+        self.runs.last_mut().unwrap()
     }
 
     pub fn run(&self, id: &str) -> Option<&Run> {
         self.runs.iter().find(|r| r.id == id)
-    }
-
-    fn run_mut(&mut self, id: &str) -> Option<&mut Run> {
-        self.runs.iter_mut().find(|r| r.id == id)
     }
 
     pub fn test_for_page(&self, page: &Page) -> Option<&Test> {
@@ -146,7 +144,9 @@ impl Model {
         self.run(&page.key.run_id)?.test(id)
     }
 
-    pub fn apply(&mut self, run_id: &str, event: Event) -> Effect {
+    /// Apply one event observed at `at` (hub receive time, ms since epoch).
+    pub fn apply(&mut self, run_id: &str, at: f64, event: Event) -> Effect {
+        self.ensure_run(run_id);
         let page_key = |page_id: &str| PageKey {
             run_id: run_id.to_owned(),
             page_id: page_id.to_owned(),
@@ -181,7 +181,7 @@ impl Model {
             }
             Event::PageClosed { page_id } => {
                 if let Some(p) = self.pages.get_mut(&page_key(&page_id)) {
-                    p.closed_at.get_or_insert_with(Instant::now);
+                    p.closed_at.get_or_insert(at);
                 }
             }
             Event::Navigated { page_id, url } => {
@@ -231,20 +231,17 @@ impl Model {
                     push_capped(&mut p.console, ConsoleRow { level, text }, MAX_ROWS);
                 }
             }
-            other => {
-                let Some(run) = self.run_mut(run_id) else { return Effect::None };
-                apply_run_event(run, other);
-            }
+            other => apply_run_event(self.ensure_run(run_id), other),
         }
         Effect::None
     }
 
-    pub fn apply_frame(&mut self, ctx: &egui::Context, key: &PageKey, ts: f64, image: egui::ColorImage) {
+    pub fn apply_frame(&mut self, ctx: &egui::Context, key: &PageKey, at: f64, image: egui::ColorImage) {
         let Some(page) = self.pages.get_mut(key) else { return };
-        if ts < page.last_frame_ts {
+        if at < page.last_frame_ts {
             return;
         }
-        page.last_frame_ts = ts;
+        page.last_frame_ts = at;
         page.frame_count += 1;
         match &mut page.texture {
             Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
@@ -312,10 +309,8 @@ fn apply_run_event(run: &mut Run, event: Event) {
         Event::AdapterLog { level, message } => {
             push_capped(&mut run.adapter_logs, format!("[{level}] {message}"), MAX_LINES)
         }
-        Event::ProcessExited { code } => {
-            run.exit = Some(code);
-            run.handle = None;
-        }
+        Event::RunStarted { label, .. } => run.label = label,
+        Event::ProcessExited { code } => run.exit = Some(code),
         Event::Hello { .. } | Event::StepEnd { .. } => {}
         // Page-scoped events are handled by the caller.
         _ => {}

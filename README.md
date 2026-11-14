@@ -20,7 +20,7 @@ Current targets: Playwright, plus Vitest browser mode (which covers Storybook's 
                               events    └──────────────────────────────────────┘
 ```
 
-Nothing is installed into or written to the user's project. Instrumentation is injected entirely through the runner's command line and environment:
+Nothing is installed into or written to the user's project. Runs use the project's Node version: the nearest `.nvmrc` / `.node-version` is matched against nvm and fnm installs (exact, else newest same-major), and the choice is printed at the top of the run output. Instrumentation is injected entirely through the runner's command line and environment:
 
 | Piece | Injection | Provides |
 |---|---|---|
@@ -35,8 +35,10 @@ The preload hooks `playwright-core` through its client instrumentation (`runAfte
 | Path | What |
 |---|---|
 | `crates/protocol` | Wire format: length-prefixed JSON events and binary JPEG frames. Mirrored in `adapters/js/transport.mjs`. |
-| `crates/core` | Orchestrator (spawn, process-group cancel), ingest socket, hub. `testudo-headless` binary prints the stream. |
-| `crates/app` | `testudo` GUI: egui + egui_tiles; panes appear/disappear as pages open/close. |
+| `crates/core` | Orchestrator (spawn, process-group cancel), ingest socket, hub. |
+| `crates/store` | Run history (SQLite) and frame recordings; `Recorder` hub subscriber; retention; MP4 export. |
+| `crates/app` | `testudo` GUI: egui + egui_tiles. Live view, plus History view with timeline replay. |
+| `crates/cli` | `testudo-cli`: headless runs (recorded), history, show, export, prune. |
 | `adapters/js` | Zero-dependency Node adapters shipped with Testudo. |
 | `examples/` | Playwright and Vitest-browser demo projects for smoke testing. |
 
@@ -48,15 +50,54 @@ The preload hooks `playwright-core` through its client instrumentation (`runAfte
 (cd examples/vitest-browser-demo && npm install)
 
 cargo run -p testudo-app -- examples/playwright-demo --run playwright   # GUI, auto-start a run
-cargo run -p testudo-core --bin testudo-headless -- vitest examples/vitest-browser-demo
+cargo run -p testudo-app -- --replay <run-id> --at 1.5                   # GUI, open a recorded run at 1.5s
+cargo run -p testudo-cli -- run vitest examples/vitest-browser-demo      # headless, recorded
+cargo run -p testudo-cli -- history
+cargo run -p testudo-cli -- export <run-id> <page-id> out.mp4
 ```
 
-`--run` is optional; the top bar starts runs of any kind against any directory, and several can run at once.
+`--run` is optional; the top bar starts runs of any kind against any directory, and several can run at once. Arguments after `--` go to the runner, e.g. `testudo <dir> --run playwright -- -c playwright.storybook.config.ts`.
+
+## Stopping runs
+
+Stop (button), closing the window, Ctrl+C, SIGTERM and SIGHUP all stop runs the way a terminal would: SIGINT to the runner's process group so it runs its own teardown (Playwright stops its `webServer`, reporters flush), escalating to SIGTERM after 5s and SIGKILL 2s later. Helpers that left the process group (Playwright starts `webServer` detached) are found from a `/proc` snapshot taken when the stop began and are cleaned up too, matched by pid and start time. The recorder then writes each run's final status before Testudo exits. A second signal to the GUI exits immediately. Sockets left by a crashed Testudo are removed on next start.
+
+## Recording and history
+
+Every run is recorded by default, from the GUI and the CLI alike.
+
+- **Events** (test lifecycle, steps, network, console, runner output) go to SQLite with their receive time. Replay re-applies them up to the scrub time, so the History view is the live view rewound: tests mid-step, network and console as of that moment, panes opening and closing.
+- **Frames** are the raw screencast JPEGs, appended per page with no re-encoding. Browsers only emit frames on repaint, and each distinct image is stored once; repeats (spinners, cursor blink, looping animation) become 20-byte references. MP4 export resamples to constant fps via ffmpeg on demand.
+- **Per-test history**: hover a test to see its recent results across runs; mixed passes and failures are flagged as flaky.
+- Runs left `running` by a crashed Testudo are marked `interrupted` on next start.
+
+Data lives in `$TESTUDO_DATA_DIR`, else `$XDG_DATA_HOME/testudo`, else `~/.local/share/testudo`.
+
+| Retention env | Default | Effect |
+|---|---|---|
+| `TESTUDO_KEEP_RUNS` | 200 | Delete whole runs beyond the newest N. |
+| `TESTUDO_MAX_FRAMES_MB` | 5120 | Oldest runs lose their frames first; their results and events stay. |
+| `TESTUDO_KEEP_FRAMES` | `all` | `failed` keeps frames only for failing tests' pages (like Playwright's `retain-on-failure`). |
+
+Retention is applied at startup and after each run. `testudo-cli prune` applies it on demand.
+
+## Verified against
+
+A real pnpm monorepo app (React, Vite, Playwright 1.60, Vitest 4 in jsdom, Storybook 10 tested through a separate Playwright config, Node 26 via `.nvmrc`):
+
+- Vitest: 84 files / 632 tests recorded (jsdom, so lifecycle only, no browser frames).
+- Storybook suite (`-c playwright.storybook.config.ts`, 16 workers): 36 tests, a live pane per story, with contexts created manually through `browser.newContext()` still instrumented and the project's own Argos reporter unaffected.
+- Backend e2e suite with the backend offline: the suite's own skips recorded correctly.
+- Project working tree unchanged after every run.
 
 ## Known gaps / next steps
 
 - Unix only (UDS + process groups). Windows needs a named-pipe listener and Job objects.
-- No persistence yet: recording (store timestamped JPEGs + events, export via ffmpeg) and SQLite run history.
+- Replay decodes frames on the UI thread; fine for a handful of pages, should move off-thread for large grids.
+- Retention settings are env-only; no settings UI yet.
+- Descendant cleanup uses `/proc` (Linux); elsewhere only the process group is stopped.
+- Node selection covers nvm and fnm only (not mise, volta, asdf, or `lts/*` aliases).
+- Playwright 1.60 on Node 26 prints its own `DEP0205 module.register()` warnings; they are not from Testudo.
 - Vitest frames are per run, not per test (all tests share one page); correlate by reporter timestamps.
 - Direct CDP attach from Rust for Chromium under non-JS runners (Go/chromedp etc).
 - Jest, Rstest, `go test -json`, `cargo nextest` adapters.

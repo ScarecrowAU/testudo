@@ -12,7 +12,8 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -20,9 +21,11 @@ use anyhow::{Context, Result};
 use testudo_protocol::{Event, Message, StdStream, env};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
-use tokio::sync::oneshot;
+use tokio::sync::{Notify, watch};
+use tracing::warn;
 
 use crate::hub::{Hub, RunId};
+use crate::procs::{self, Sig};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunnerKind {
@@ -51,17 +54,20 @@ pub struct RunSpec {
     pub args: Vec<String>,
 }
 
+/// How long a cancelled run gets to shut down after SIGINT before escalating to
+/// SIGTERM (then SIGKILL 2s later).
+pub const CANCEL_GRACE: Duration = Duration::from_secs(5);
+
 pub struct RunHandle {
     pub id: RunId,
-    cancel: Option<oneshot::Sender<()>>,
+    cancel: Arc<watch::Sender<bool>>,
 }
 
 impl RunHandle {
-    /// Ask the run to stop: SIGTERM to the process group, SIGKILL after a grace period.
-    pub fn cancel(&mut self) {
-        if let Some(tx) = self.cancel.take() {
-            let _ = tx.send(());
-        }
+    /// Ask the run to stop: SIGINT, then SIGTERM after `CANCEL_GRACE`, then SIGKILL;
+    /// detached helpers are cleaned up after the runner exits.
+    pub fn cancel(&self) {
+        let _ = self.cancel.send(true);
     }
 }
 
@@ -76,6 +82,9 @@ struct Inner {
     adapters: PathBuf,
     rt: tokio::runtime::Handle,
     next_id: AtomicU64,
+    /// Runs whose process has not exited yet, with their cancel switch.
+    active: Mutex<HashMap<RunId, Arc<watch::Sender<bool>>>>,
+    run_exited: Notify,
 }
 
 impl Orchestrator {
@@ -87,14 +96,56 @@ impl Orchestrator {
                 adapters,
                 rt,
                 next_id: AtomicU64::new(1),
+                active: Mutex::new(HashMap::new()),
+                run_exited: Notify::new(),
             }),
         }
+    }
+
+    pub fn active_runs(&self) -> usize {
+        self.inner.active.lock().unwrap().len()
+    }
+
+    pub fn cancel_all(&self) {
+        for tx in self.inner.active.lock().unwrap().values() {
+            let _ = tx.send(true);
+        }
+    }
+
+    /// Cancel every active run and wait for their processes to exit (see
+    /// `RunHandle::cancel` for the escalation). Each run's
+    /// `ProcessExited` is published before this returns, so a recorder can then
+    /// be drained with a complete history.
+    pub async fn shutdown(&self) {
+        self.cancel_all();
+        let deadline = tokio::time::Instant::now() + CANCEL_GRACE + Duration::from_secs(6);
+        loop {
+            let notified = self.inner.run_exited.notified();
+            if self.active_runs() == 0 {
+                return;
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                warn!(remaining = self.active_runs(), "runs did not exit in time");
+                return;
+            }
+        }
+    }
+
+    /// `shutdown` for callers outside the runtime (the GUI's main thread).
+    pub fn shutdown_blocking(&self) {
+        let this = self.clone();
+        self.inner.rt.block_on(async move { this.shutdown().await });
     }
 
     /// Spawn a run. Safe to call from any thread.
     pub fn start(&self, spec: RunSpec) -> Result<RunHandle> {
         let inner = &self.inner;
-        let id = format!("run-{}", inner.next_id.fetch_add(1, Ordering::Relaxed));
+        // Unique across restarts: run ids key the persistent history.
+        let id = format!(
+            "{}-{}",
+            crate::hub::now_ms() as u64,
+            inner.next_id.fetch_add(1, Ordering::Relaxed)
+        );
         let cwd = spec
             .cwd
             .canonicalize()
@@ -108,6 +159,29 @@ impl Orchestrator {
             node_options = format!("{node_options} {existing}");
         }
 
+        // Honour the project's .nvmrc/.node-version. Reported in the run output so
+        // a version mismatch is visible rather than silent.
+        let mut notes = Vec::new();
+        let mut path_env = std::env::var_os("PATH").unwrap_or_default();
+        if !matches!(spec.kind, RunnerKind::Command { .. }) {
+            match crate::node_env::resolve(&cwd) {
+                Some(Ok(choice)) => {
+                    let mut paths = vec![choice.bin_dir.clone()];
+                    paths.extend(std::env::split_paths(&path_env));
+                    path_env = std::env::join_paths(paths).unwrap_or(path_env);
+                    notes.push(format!(
+                        "[testudo] node {} ({} wants {}{})",
+                        choice.version,
+                        choice.source.display(),
+                        choice.wanted,
+                        if choice.exact { "" } else { "; closest installed" }
+                    ));
+                }
+                Some(Err(reason)) => notes.push(format!("[testudo] {reason}")),
+                None => {}
+            }
+        }
+
         let _guard = inner.rt.enter();
         let mut cmd = Command::new(&program);
         cmd.args(&args)
@@ -117,6 +191,7 @@ impl Orchestrator {
             .env(env::RUN_ID, &id)
             .env(env::PROJECT_ROOT, &cwd)
             .env("FORCE_COLOR", "0")
+            .env("PATH", &path_env)
             .envs(envs)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -130,34 +205,57 @@ impl Orchestrator {
             .with_context(|| format!("spawning {program} {}", args.join(" ")))?;
 
         let hub = inner.hub.clone();
+        hub.publish(
+            &id,
+            Message::Event(Event::RunStarted {
+                label: spec.label.clone(),
+                runner: spec.kind.name().to_owned(),
+                cwd: cwd.display().to_string(),
+                args: spec.args.clone(),
+            }),
+        );
+        for line in notes {
+            hub.publish(&id, Message::Event(Event::Stdio { stream: StdStream::Stderr, line }));
+        }
         pipe_lines(child.stdout.take().unwrap(), StdStream::Stdout, hub.clone(), id.clone());
         pipe_lines(child.stderr.take().unwrap(), StdStream::Stderr, hub.clone(), id.clone());
 
-        let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+        let (cancel_tx, mut cancel_rx) = watch::channel(false);
+        let cancel_tx = Arc::new(cancel_tx);
+        inner.active.lock().unwrap().insert(id.clone(), cancel_tx.clone());
         let run_id = id.clone();
+        let orch = self.clone();
         tokio::spawn(async move {
-            let pid = child.id();
+            let pgid = child.id().map(|p| p as i32);
+            let mut snapshot = Vec::new();
             let status = tokio::select! {
                 s = child.wait() => s,
-                _ = cancel_rx => {
-                    signal_group(pid, Signal::Term);
-                    match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
-                        Ok(s) => s,
-                        Err(_) => {
-                            signal_group(pid, Signal::Kill);
-                            child.wait().await
-                        }
+                // Drop the watch::Ref (not Send) before awaiting anything else.
+                _ = async { cancel_rx.wait_for(|c| *c).await.is_ok() } => {
+                    if let Some(pgid) = pgid {
+                        // Before signalling: the tree is intact, so detached helpers
+                        // (Playwright's webServer) are still findable as descendants.
+                        snapshot = procs::descendants(pgid);
                     }
+                    stop(&mut child, pgid).await
                 }
             };
+            if let Some(pgid) = pgid {
+                // Leftovers in the runner's own group (normal exit or not), then
+                // anything from the snapshot that escaped into other groups.
+                procs::signal_group(pgid, Sig::Term);
+                if procs::signal_survivors(&snapshot, pgid, Sig::Term) > 0 {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    procs::signal_survivors(&snapshot, pgid, Sig::Kill);
+                }
+            }
             let code = status.ok().and_then(|s| s.code());
             hub.publish(&run_id, Message::Event(Event::ProcessExited { code }));
+            orch.inner.active.lock().unwrap().remove(&run_id);
+            orch.inner.run_exited.notify_waiters();
         });
 
-        Ok(RunHandle {
-            id,
-            cancel: Some(cancel_tx),
-        })
+        Ok(RunHandle { id, cancel: cancel_tx })
     }
 }
 
@@ -252,28 +350,18 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
-enum Signal {
-    Term,
-    Kill,
-}
-
-#[cfg(unix)]
-fn signal_group(pid: Option<u32>, sig: Signal) {
-    let Some(pid) = pid else { return };
-    let sig = match sig {
-        Signal::Term => libc::SIGTERM,
-        Signal::Kill => libc::SIGKILL,
-    };
-    // Negative pid targets the process group created by `process_group(0)`, which
-    // includes runner workers and the browsers they launched.
-    unsafe {
-        libc::kill(-(pid as i32), sig);
+/// Stop like a terminal would: SIGINT first so runners run their own teardown
+/// (Playwright stops its webServer, reporters flush), then SIGTERM, then SIGKILL.
+async fn stop(child: &mut tokio::process::Child, pgid: Option<i32>) -> std::io::Result<std::process::ExitStatus> {
+    let Some(pgid) = pgid else { return child.wait().await };
+    for (sig, wait) in [(Sig::Int, CANCEL_GRACE), (Sig::Term, Duration::from_secs(2))] {
+        procs::signal_group(pgid, sig);
+        if let Ok(status) = tokio::time::timeout(wait, child.wait()).await {
+            return status;
+        }
     }
-}
-
-#[cfg(not(unix))]
-fn signal_group(_pid: Option<u32>, _sig: Signal) {
-    // TODO: Job objects on Windows. kill_on_drop covers the leader process.
+    procs::signal_group(pgid, Sig::Kill);
+    child.wait().await
 }
 
 #[cfg(test)]
