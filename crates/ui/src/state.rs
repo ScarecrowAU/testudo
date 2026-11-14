@@ -342,11 +342,13 @@ impl PageFocus {
     }
 
     /// Show earlier recordings of `test` (file + title path) beside this page.
+    #[tracing::instrument(level = "info", name = "compare_open", skip(self, title_path, store), fields(lanes = tracing::field::Empty))]
     pub fn open_compare(&mut self, file: &str, title_path: &[String], store: &Store) {
         let prior = store
             .prior_pages(file, title_path, &self.key.run_id, COMPARE_RUNS)
             .inspect_err(|e| tracing::warn!("comparison query failed: {e:#}"))
             .unwrap_or_default();
+        tracing::Span::current().record("lanes", prior.len());
         self.compare = Some(prior.into_iter().map(|p| CompareLane::new(p, store)).collect());
     }
 
@@ -526,9 +528,11 @@ pub struct Replay {
 }
 
 impl Replay {
+    #[tracing::instrument(level = "info", name = "replay_load", skip(store), fields(events = tracing::field::Empty))]
     pub fn load(store: &Store, run_id: &str) -> anyhow::Result<Self> {
         let run = store.run(run_id)?.ok_or_else(|| anyhow::anyhow!("run {run_id} not found"))?;
         let events = store.run_events(run_id)?;
+        tracing::Span::current().record("events", events.len());
         let start = run.started_at;
         let end = run
             .ended_at
@@ -716,7 +720,9 @@ impl Exporter {
         let frames = store.frame_path(&page.run_id, &page.page_id);
         let out = store.exports_dir().join(format!("{}-{}.mp4", page.run_id, page.page_id));
         let (tx, rx) = channel();
+        let span = tracing::info_span!("export_mp4", run.id = %page.run_id, page.id = %page.page_id);
         std::thread::spawn(move || {
+            let _span = span.entered();
             let r = export_mp4(&frames, &out, &ExportOptions::default())
                 .map(|_| out)
                 .map_err(|e| format!("{e:#}"));

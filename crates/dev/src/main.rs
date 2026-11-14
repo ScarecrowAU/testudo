@@ -11,6 +11,11 @@
 //! - Adapter (`adapters/js`) edits need no restart: the runner loads them fresh
 //!   for every run, so they are only reported.
 //! - Closing the window ends the loop; a crash keeps watching for a fix.
+//! - The app's log also goes to `target/dev/testudo.log` (fresh per start;
+//!   the previous one is kept as `testudo.prev.log`).
+//! - With a local Pitot running (`make pitot`), the app's spans and logs are
+//!   exported to it (`target/dev/pitot.env`), unless TESTUDO_OTLP_ENDPOINT is
+//!   already set.
 //!
 //! Usage: testudo-dev [-- args for testudo]
 
@@ -31,6 +36,7 @@ fn main() {
     let root = root.canonicalize().unwrap_or(root);
     let app_args: Vec<String> = std::env::args().skip(1).skip_while(|a| a == "--").collect();
     let bin = root.join("target/debug/testudo");
+    let log_file = root.join("target/dev/testudo.log");
 
     // A terminal Ctrl+C reaches the whole foreground group: let the app handle
     // it (graceful close) and exit when the app does.
@@ -39,7 +45,7 @@ fn main() {
     log("watching crates/ (Rust) and adapters/js/ (no restart needed); close the window or Ctrl+C to quit");
     let mut sources = scan(&root, is_source);
     let mut adapters = scan(&root.join("adapters/js"), |p| ext(p, "mjs"));
-    let mut app = if build_latest(&root, &mut sources) { start(&bin, &app_args) } else { None };
+    let mut app = if build_latest(&root, &mut sources) { start(&bin, &app_args, &log_file) } else { None };
 
     loop {
         std::thread::sleep(POLL);
@@ -88,7 +94,7 @@ fn main() {
             log("restarting testudo");
             stop(child);
         }
-        app = start(&bin, &app_args);
+        app = start(&bin, &app_args, &log_file);
     }
 }
 
@@ -133,14 +139,44 @@ fn build_latest(root: &Path, sources: &mut Snapshot) -> bool {
     }
 }
 
-fn start(bin: &Path, args: &[String]) -> Option<Child> {
-    match Command::new(bin).args(args).spawn() {
+fn start(bin: &Path, args: &[String], log_file: &Path) -> Option<Child> {
+    if let Some(dir) = log_file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::rename(log_file, log_file.with_file_name("testudo.prev.log"));
+    let mut cmd = Command::new(bin);
+    cmd.args(args).env("TESTUDO_LOG_FILE", log_file);
+    if std::env::var_os("TESTUDO_OTLP_ENDPOINT").is_none() {
+        let pitot = pitot_env(&log_file.with_file_name("pitot.env"));
+        if let Some((_, endpoint)) = pitot.iter().find(|(k, _)| k == "TESTUDO_OTLP_ENDPOINT") {
+            log(&format!("exporting traces and logs to Pitot at {endpoint}"));
+        }
+        cmd.envs(pitot);
+    }
+    match cmd.spawn() {
         Ok(child) => Some(child),
         Err(e) => {
             log(&format!("failed to start {}: {e}", bin.display()));
             None
         }
     }
+}
+
+/// `KEY=value` lines from `make pitot`, if that Pitot is answering.
+fn pitot_env(path: &Path) -> Vec<(String, String)> {
+    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    let vars: Vec<(String, String)> = text
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned()))
+        .collect();
+    let up = vars
+        .iter()
+        .find(|(k, _)| k == "TESTUDO_OTLP_ENDPOINT")
+        .and_then(|(_, url)| url.strip_prefix("http://"))
+        .and_then(|host| host.trim_end_matches('/').parse::<std::net::SocketAddr>().ok())
+        .is_some_and(|addr| std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok());
+    if up { vars } else { Vec::new() }
 }
 
 fn stop(mut child: Child) {

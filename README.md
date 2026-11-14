@@ -61,6 +61,12 @@ make dev ARGS="~/dev/some-app --run playwright"  # args are passed to testudo
 
 The app restarts only when the build succeeds; a compile error keeps the current window. Edits made while a build is running cancel it and rebuild from the latest state, so there is one restart per settled change. Restarts close the app gracefully (active runs are stopped cleanly). Adapter edits (`adapters/js`) need no restart; each run loads them fresh. Closing the window ends the loop.
 
+### Logs and traces
+
+- `make dev` writes the app's log to `target/dev/testudo.log` (new file per restart, previous one kept as `testudo.prev.log`). Any build: `TESTUDO_LOG_FILE=<path>`; level via `RUST_LOG`.
+- `make pitot` starts a local [Pitot](https://github.com/labstack/pitot) (Docker, `127.0.0.1:7520`) and prints the one-time admin setup link on first run. While it runs, `make dev` exports Testudo's spans and logs to it: `run` (spawn to exit, with exit code), `adapter_connection` (events/frames/bytes per adapter), `drain_adapter_connections`, `stop_process_group`, `recorder_finish_run`, `discover`, `replay_load`, `compare_open`, `export_mp4`. `make pitot-stop` stops it; `scripts/pitot.sh reset` deletes its data (Pitot is alpha, no migrations).
+- Any OTLP/HTTP collector works: `TESTUDO_OTLP_ENDPOINT=http://host:port` (plus `TESTUDO_OTLP_TOKEN` for a bearer token, `TESTUDO_OTLP_FILTER` to change what is exported). These are Testudo-specific so the `OTEL_*` variables meant for your apps don't capture Testudo, and they are removed from test runs' environment.
+
 ## Running from source
 
 ```sh

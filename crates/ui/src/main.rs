@@ -4,6 +4,7 @@ mod fonts;
 mod logic;
 mod model;
 mod state;
+mod telemetry;
 
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -22,11 +23,14 @@ fn main() -> Result<()> {
     // SAFETY: single-threaded at this point.
     let imported = unsafe { testudo_core::shell_env::import_login_shell_env() };
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,wgpu=warn,naga=warn".into()),
-        )
-        .init();
+    // Lives until the end of main so OTLP export is flushed on exit.
+    let telemetry = telemetry::init();
+    if let Some(path) = &telemetry.log_file {
+        tracing::info!(path = %path.display(), "logging to file");
+    }
+    if let Some(endpoint) = &telemetry.otlp_endpoint {
+        tracing::info!(%endpoint, "exporting traces and logs over OTLP");
+    }
 
     // testudo [project-dir] [--run all|playwright|vitest|<suite name part>]
     //         [--replay <run-id> [--at <secs>] [--focus <page-id>]] [-- runner args]
@@ -140,6 +144,7 @@ fn main() -> Result<()> {
     if let Some(r) = recorder {
         r.join();
     }
+    drop(telemetry);
     Ok(())
 }
 

@@ -22,7 +22,7 @@ use testudo_protocol::{Event, Message, StdStream, env};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 use tokio::sync::{Notify, watch};
-use tracing::warn;
+use tracing::{Instrument, info_span, warn};
 
 use crate::hub::{Hub, RunId};
 use crate::procs::{self, Sig};
@@ -163,6 +163,17 @@ impl Orchestrator {
             crate::hub::now_ms() as u64,
             inner.next_id.fetch_add(1, Ordering::Relaxed)
         );
+        // One span per run, from spawn to exit (Testudo's own tracing).
+        let span = info_span!(
+            "run",
+            run.id = %id,
+            run.label = %spec.label,
+            runner = spec.kind.name(),
+            cwd = %spec.cwd.display(),
+            exit_code = tracing::field::Empty,
+            cancelled = tracing::field::Empty,
+        );
+        let _entered = span.enter();
         let cwd = spec
             .cwd
             .canonicalize()
@@ -210,6 +221,10 @@ impl Orchestrator {
             .env(env::PROJECT_ROOT, &cwd)
             .env("FORCE_COLOR", "0")
             .env("PATH", &path_env)
+            // Testudo's own telemetry settings are not for the test run.
+            .env_remove("TESTUDO_OTLP_ENDPOINT")
+            .env_remove("TESTUDO_OTLP_TOKEN")
+            .env_remove("TESTUDO_LOG_FILE")
             .envs(envs)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -243,6 +258,7 @@ impl Orchestrator {
         inner.active.lock().unwrap().insert(id.clone(), cancel_tx.clone());
         let run_id = id.clone();
         let orch = self.clone();
+        let run_span = span.clone();
         tokio::spawn(async move {
             let pgid = child.id().map(|p| p as i32);
             let mut snapshot = Vec::new();
@@ -250,12 +266,13 @@ impl Orchestrator {
                 s = child.wait() => s,
                 // Drop the watch::Ref (not Send) before awaiting anything else.
                 _ = async { cancel_rx.wait_for(|c| *c).await.is_ok() } => {
+                    run_span.record("cancelled", true);
                     if let Some(pgid) = pgid {
                         // Before signalling: the tree is intact, so detached helpers
                         // (Playwright's webServer) are still findable as descendants.
                         snapshot = procs::descendants(pgid);
                     }
-                    stop(&mut child, pgid).await
+                    stop(&mut child, pgid).instrument(info_span!("stop_process_group")).await
                 }
             };
             if let Some(pgid) = pgid {
@@ -269,14 +286,24 @@ impl Orchestrator {
             }
             // Announce the exit only after everything the run's processes sent
             // has been published, so consumers see its final results first.
-            if !orch.inner.connections.drained(&run_id, Duration::from_secs(3)).await {
+            let drained = orch
+                .inner
+                .connections
+                .drained(&run_id, Duration::from_secs(3))
+                .instrument(info_span!("drain_adapter_connections"))
+                .await;
+            if !drained {
                 warn!(run = %run_id, "adapter connections still open after exit");
             }
             let code = status.ok().and_then(|s| s.code());
+            if let Some(c) = code {
+                run_span.record("exit_code", c);
+            }
             hub.publish(&run_id, Message::Event(Event::ProcessExited { code }));
             orch.inner.active.lock().unwrap().remove(&run_id);
             orch.inner.run_exited.notify_waiters();
-        });
+        }
+        .instrument(span.clone()));
 
         Ok(RunHandle { id, cancel: cancel_tx })
     }

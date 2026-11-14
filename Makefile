@@ -24,7 +24,7 @@ APPDIR      := $(DESTDIR)$(PREFIX)/share/applications
 BINS     := testudo testudo-cli
 ADAPTERS := $(wildcard adapters/js/*.mjs) adapters/js/package.json
 
-.PHONY: help build install uninstall test lint clean dev
+.PHONY: help build install uninstall test lint clean dev pitot pitot-stop
 
 help: ## show targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -57,3 +57,9 @@ clean: ## remove build output
 
 dev: ## rebuild on change and restart the GUI when the build succeeds (ARGS="<project dir> ...")
 	$(CARGO) run -q -p testudo-dev -- $(ARGS)
+
+pitot: ## start a local Pitot for Testudo's traces/logs (make dev exports to it)
+	scripts/pitot.sh start
+
+pitot-stop: ## stop the local Pitot (data kept; scripts/pitot.sh reset deletes it)
+	scripts/pitot.sh stop

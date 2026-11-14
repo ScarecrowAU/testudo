@@ -101,6 +101,7 @@ impl Suite {
     }
 }
 
+#[tracing::instrument(level = "info", skip_all, fields(root = %root.display(), suites = tracing::field::Empty))]
 pub fn discover(root: &Path) -> Vec<Suite> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_owned());
     let mut files = Vec::new();
@@ -171,6 +172,7 @@ pub fn discover(root: &Path) -> Vec<Suite> {
             });
         }
     }
+    tracing::Span::current().record("suites", suites.len());
     suites
 }
 

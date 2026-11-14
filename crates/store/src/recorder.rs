@@ -9,7 +9,7 @@ use anyhow::Result;
 use rusqlite::{Connection, params};
 use testudo_core::{Hub, HubMessage};
 use testudo_protocol::{Event, Message};
-use tracing::{info, warn};
+use tracing::{debug_span, info, info_span, warn};
 
 use crate::frames::FrameWriter;
 use crate::{KeepFrames, PruneReport, Retention, Store, frame_path, open_conn, prune};
@@ -88,6 +88,8 @@ impl Writer {
     }
 
     fn commit(&mut self) {
+        // Debug level: under light load this runs per message.
+        let _span = debug_span!("recorder_commit", events = self.batched, frame_files = self.frames.len()).entered();
         for w in self.frames.values_mut() {
             if let Err(e) = w.flush() {
                 warn!("recorder: flushing frames: {e:#}");
@@ -245,6 +247,7 @@ impl Writer {
     }
 
     fn finish_run(&mut self, run_id: &str, at: f64, code: Option<i32>) -> Result<()> {
+        let _span = info_span!("recorder_finish_run", run.id = run_id, exit_code = code).entered();
         let reported = self.run_end.remove(run_id);
         let status = match (reported.as_deref(), code) {
             (Some(s @ ("passed" | "failed" | "interrupted" | "timedout")), _) => s.to_owned(),

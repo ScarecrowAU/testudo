@@ -9,7 +9,7 @@ use testudo_protocol::{Event, Message, decode};
 use tokio::io::AsyncReadExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Notify;
-use tracing::{debug, warn};
+use tracing::{Instrument, Span, debug, field, info_span, warn};
 
 use crate::hub::Hub;
 
@@ -88,6 +88,14 @@ impl IngestServer {
                         let hub = hub.clone();
                         let conns = conns.clone();
                         conns.update(|s| s.pending += 1);
+                        let span = info_span!(
+                            "adapter_connection",
+                            run.id = field::Empty,
+                            adapter = field::Empty,
+                            events = field::Empty,
+                            frames = field::Empty,
+                            bytes = field::Empty,
+                        );
                         tokio::spawn(async move {
                             let mut run_id = None;
                             if let Err(e) = handle_connection(stream, hub, &conns, &mut run_id).await {
@@ -97,7 +105,8 @@ impl IngestServer {
                                 Some(id) => *s.by_run.entry(id).or_default() -= 1,
                                 None => s.pending -= 1,
                             });
-                        });
+                        }
+                        .instrument(span));
                     }
                     Err(e) => warn!("ingest accept failed: {e}"),
                 }
@@ -160,14 +169,41 @@ async fn handle_connection(
     run_id: &mut Option<String>,
 ) -> Result<()> {
     let mut buf = BytesMut::with_capacity(256 * 1024);
+    let mut counts = Counts::default();
+    let result = read_messages(&mut stream, &mut buf, hub, conns, run_id, &mut counts).await;
+    // Recorded however the connection ends.
+    let span = Span::current();
+    span.record("events", counts.events);
+    span.record("frames", counts.frames);
+    span.record("bytes", counts.bytes);
+    result
+}
 
+#[derive(Default)]
+struct Counts {
+    events: u64,
+    frames: u64,
+    bytes: u64,
+}
+
+async fn read_messages(
+    stream: &mut UnixStream,
+    buf: &mut BytesMut,
+    hub: Hub,
+    conns: &Connections,
+    run_id: &mut Option<String>,
+    counts: &mut Counts,
+) -> Result<()> {
     loop {
         loop {
-            match decode(&mut buf) {
+            match decode(buf) {
                 Ok(Some(msg)) => {
                     if run_id.is_none() {
                         match &msg {
-                            Message::Event(Event::Hello { run_id: Some(id), .. }) => {
+                            Message::Event(Event::Hello { run_id: Some(id), role, runner, pid, .. }) => {
+                                let span = Span::current();
+                                span.record("run.id", id.as_str());
+                                span.record("adapter", format!("{role:?} ({runner}, pid {pid})"));
                                 // Move from pending to the run in one step.
                                 conns.update(|s| {
                                     s.pending -= 1;
@@ -178,6 +214,10 @@ async fn handle_connection(
                             _ => anyhow::bail!("first message was not Hello with a runId"),
                         }
                     }
+                    match &msg {
+                        Message::Frame { .. } => counts.frames += 1,
+                        Message::Event(_) => counts.events += 1,
+                    }
                     hub.publish(run_id.as_deref().unwrap(), msg);
                 }
                 Ok(None) => break,
@@ -187,8 +227,10 @@ async fn handle_connection(
                 Err(e) => return Err(e.into()),
             }
         }
-        if stream.read_buf(&mut buf).await? == 0 {
+        let n = stream.read_buf(buf).await?;
+        if n == 0 {
             return Ok(());
         }
+        counts.bytes += n as u64;
     }
 }
