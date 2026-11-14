@@ -89,6 +89,9 @@ pub struct TestudoApp {
 
     live: PagesView,
     handles: HashMap<RunId, RunHandle>,
+    /// Runs from a project we switched away from: still shutting down, their
+    /// late events and frames are ignored (the recorder still keeps them).
+    dropped_runs: std::collections::HashSet<RunId>,
     history: Vec<RunRow>,
     /// Tests that both passed and failed in recent runs.
     flaky: Vec<testudo_store::FlakyTest>,
@@ -188,6 +191,7 @@ impl TestudoApp {
             mode: Mode::Live,
             live: PagesView::new(),
             handles: HashMap::new(),
+            dropped_runs: Default::default(),
             history: Vec::new(),
             flaky: Vec::new(),
             replay: None,
@@ -278,6 +282,17 @@ impl TestudoApp {
     // --- data flow -------------------------------------------------------------
 
     fn on_msg(&mut self, msg: UiMsg, cx: &mut Context<Self>) {
+        let run = match &msg {
+            UiMsg::Event { run_id, .. } => run_id.as_str(),
+            UiMsg::Frame { key, .. } => key.run_id.as_str(),
+        };
+        if self.dropped_runs.contains(run) {
+            if let UiMsg::Event { event: Event::ProcessExited { .. }, .. } = &msg {
+                self.dropped_runs.remove(run);
+                self.refresh_history();
+            }
+            return;
+        }
         match msg {
             UiMsg::Event { run_id, at, event } => {
                 if let Event::ProcessExited { .. } = &event {
@@ -336,10 +351,28 @@ impl TestudoApp {
             self.error = Some(format!("{} is not a directory", dir.display()));
             return;
         }
+        let same = |a: &PathBuf, b: &PathBuf| a.canonicalize().ok().zip(b.canonicalize().ok()).is_some_and(|(a, b)| a == b);
+        if self.scanned.as_ref().is_some_and(|old| !same(old, &dir)) {
+            self.leave_project();
+        }
         self.suites = discover(&dir);
         self.scanned = Some(dir);
         self.error = None;
         cx.notify();
+    }
+
+    /// Switching projects: stop its runs and clear the live view (runs, pages,
+    /// focus). Settings are kept; History still has everything.
+    #[tracing::instrument(level = "info", skip_all, fields(stopped = self.handles.len()))]
+    fn leave_project(&mut self) {
+        for (id, handle) in self.handles.drain() {
+            handle.cancel();
+            self.dropped_runs.insert(id);
+        }
+        // Finished runs may still have stragglers (late adapter messages).
+        self.dropped_runs.extend(self.live.model.runs.iter().map(|r| r.id.clone()));
+        let images = self.live.clear();
+        self.retired.extend(images);
     }
 
     fn autorun(&mut self, filter: &str, cx: &mut Context<Self>) {
@@ -529,6 +562,22 @@ impl TestudoApp {
         handle.set_offset(point(px(0.), px(-y)));
         self.perf.input("run_list");
         window.request_animation_frame();
+    }
+
+    /// Test hook (debug builds only): TESTUDO_DEBUG_SWITCH_DIR=<dir> switches
+    /// to that project 8s after start, as if typed in and scanned.
+    #[cfg(debug_assertions)]
+    fn debug_switch_dir(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dir) = std::env::var_os("TESTUDO_DEBUG_SWITCH_DIR") else { return };
+        if self.started_at.elapsed() < Duration::from_secs(8) {
+            window.request_animation_frame();
+            return;
+        }
+        let dir = dir.to_string_lossy().into_owned();
+        if self.project_input.read(cx).value().as_ref() != dir.as_str() {
+            self.project_input.update(cx, |s, cx| s.set_value(dir, window, cx));
+            self.scan(cx);
+        }
     }
 
     /// What is on screen, for slow-frame reports.
@@ -765,6 +814,8 @@ impl Render for TestudoApp {
         };
         #[cfg(debug_assertions)]
         self.debug_autoscroll(window);
+        #[cfg(debug_assertions)]
+        self.debug_switch_dir(window, cx);
         let ctx = self.frame_ctx();
         if self.perf.frame_end(frame_start, ctx) {
             window.request_animation_frame();

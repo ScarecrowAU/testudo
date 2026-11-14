@@ -139,6 +139,20 @@ impl PagesView {
         }
     }
 
+    /// Forget every run and page, keeping view settings. Returns the images
+    /// it held, to be retired.
+    pub fn clear(&mut self) -> Retired {
+        let images = self.take_images();
+        let mut fresh = PagesView::new();
+        fresh.inspector_tab = self.inspector_tab;
+        fresh.keep_closed_pages = self.keep_closed_pages;
+        fresh.hide_repeated_stderr = self.hide_repeated_stderr;
+        fresh.output_stream = self.output_stream;
+        fresh.output_follow = self.output_follow;
+        *self = fresh;
+        images
+    }
+
     pub fn open_focus(&mut self, focus: PageFocus) {
         self.selected_page = Some(focus.key.clone());
         self.inspector_tab = InspectorTab::Network;
@@ -770,6 +784,19 @@ mod tests {
         let runs: Vec<&str> = view.model.pages.keys().map(|k| k.run_id.as_str()).collect();
         assert_eq!(runs, ["busy"]);
         assert_eq!(view.model.runs.len(), 2, "runs stay in the run list");
+    }
+
+    #[test]
+    fn clear_forgets_runs_and_pages_but_keeps_settings() {
+        let mut view = PagesView::new();
+        view.keep_closed_pages = false;
+        view.hide_repeated_stderr = false;
+        page_events(&mut view, "r1", 0.0);
+        view.collapsed_runs.insert("r1".into());
+        let _ = view.clear();
+        assert!(view.model.runs.is_empty() && view.model.pages.is_empty());
+        assert!(view.collapsed_runs.is_empty() && view.selected_run.is_none());
+        assert!(!view.keep_closed_pages && !view.hide_repeated_stderr, "settings kept");
     }
 
     #[test]
