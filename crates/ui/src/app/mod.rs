@@ -125,6 +125,9 @@ pub struct TestudoApp {
     started_at: Instant,
     focus_handle: FocusHandle,
     focus_scrub: Rc<Cell<Bounds<Pixels>>>,
+    /// Size of the comparison area at the last layout, and whether it was
+    /// laid out stacked: decides side by side vs stacked (see focus.rs).
+    compare_area: Rc<Cell<(Bounds<Pixels>, bool)>>,
     timeline_scrub: Rc<Cell<Bounds<Pixels>>>,
     /// Test span under the mouse on the replay timeline.
     timeline_hover: Option<usize>,
@@ -222,6 +225,7 @@ impl TestudoApp {
             started_at: Instant::now(),
             focus_handle: cx.focus_handle(),
             focus_scrub: Rc::new(Cell::new(Bounds::default())),
+            compare_area: Rc::new(Cell::new((Bounds::default(), false))),
             timeline_scrub: Rc::new(Cell::new(Bounds::default())),
             timeline_hover: None,
             net_scroll: UniformListScrollHandle::new(),

@@ -583,6 +583,11 @@ impl TestudoApp {
                         .child(pill(status_label(status), status_color)))
                     .child(frame);
                 let (label, st, image) = cell.unwrap_or_default();
+                // The recordings' shape (the earlier run's frame; 16:9 until one loads).
+                let frame_shape = image
+                    .as_ref()
+                    .map(|i| i.size(0))
+                    .map_or((16.0, 9.0), |s| (u32::from(s.width) as f32, u32::from(s.height) as f32));
                 let (_, stn) = status_icon(st);
                 // Left goes back in time (older runs), right forward.
                 let to_older = cx.listener(move |this, _, _, cx| this.step_compare(w, 1, cx));
@@ -632,9 +637,50 @@ impl TestudoApp {
                             .relative()
                             .children(image.map(frame_img)),
                     );
-                // Stretch: cells get their height from the row, not their
-                // content (frames are pinned to their cell, adding no height).
-                h_flex().items_stretch().flex_1().min_h_0().gap_2().child(this_run).child(earlier).into_any_element()
+                // Side by side or stacked, whichever shows the frames larger
+                // for this page's shape. The area is measured at layout; if
+                // the best arrangement changed, lay out again.
+                const CELL_HEADER: f32 = 30.;
+                const CELL_GAP: f32 = 8.;
+                let area_cell = self.compare_area.clone();
+                let (area, _) = area_cell.get();
+                let stacked = crate::logic::stack_vertically(
+                    (f32::from(area.size.width), f32::from(area.size.height)),
+                    frame_shape,
+                    CELL_HEADER,
+                    CELL_GAP,
+                );
+                area_cell.set((area, stacked));
+                let measure = canvas(
+                    move |bounds, window, _| {
+                        let (_, laid_out) = area_cell.get();
+                        let best = crate::logic::stack_vertically(
+                            (f32::from(bounds.size.width), f32::from(bounds.size.height)),
+                            frame_shape,
+                            CELL_HEADER,
+                            CELL_GAP,
+                        );
+                        area_cell.set((bounds, laid_out));
+                        if best != laid_out {
+                            window.refresh();
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0();
+                // Stretch: cells get their size from the container, not their
+                // content (frames are pinned to their cell, adding no size).
+                let pair = if stacked { v_flex() } else { h_flex() };
+                pair.items_stretch()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .gap_2()
+                    .child(measure)
+                    .child(this_run)
+                    .child(earlier)
+                    .into_any_element()
             }
         };
 

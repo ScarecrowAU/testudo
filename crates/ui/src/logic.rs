@@ -196,6 +196,19 @@ pub fn rerun_args(runner: &str, cwd: &str, file: &str, line: u32, project: Optio
     Some(args)
 }
 
+/// Should two recordings of shape `frame` (w, h) be stacked one above the
+/// other (else side by side) in an `area` (w, h)? Picks the arrangement that
+/// shows them larger; each cell loses `header` px to its label row, cells are
+/// `gap` px apart. Ties go side by side.
+pub fn stack_vertically(area: (f32, f32), frame: (f32, f32), header: f32, gap: f32) -> bool {
+    let (w, h) = area;
+    let (fw, fh) = (frame.0.max(1.0), frame.1.max(1.0));
+    let fit = |cw: f32, ch: f32| (cw / fw).min(ch / fh).max(0.0);
+    let side_by_side = fit((w - gap) / 2.0, h - header);
+    let stacked = fit(w, (h - gap) / 2.0 - header);
+    stacked > side_by_side
+}
+
 pub fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_owned()
@@ -326,6 +339,18 @@ mod tests {
         assert_eq!(rerun_args("vitest", "/p", "/p/src/x.test.ts", 3, Some("ignored")), Some(vec!["src/x.test.ts:3".to_owned()]));
         assert_eq!(rerun_args("playwright", "/p", "/elsewhere/a.spec.ts", 1, None), Some(vec!["/elsewhere/a.spec.ts:1".to_owned()]));
         assert_eq!(rerun_args("command", "/p", "/p/a", 1, None), None);
+    }
+
+    #[test]
+    fn comparison_layout_follows_the_space_and_page_shape() {
+        // Wide pane, phone page: side by side.
+        assert!(!stack_vertically((1000.0, 600.0), (390.0, 844.0), 30.0, 8.0));
+        // Tall pane, desktop page: stacked.
+        assert!(stack_vertically((600.0, 1000.0), (1280.0, 720.0), 30.0, 8.0));
+        // Desktop page in a roughly square pane: stacking shows it larger.
+        assert!(stack_vertically((900.0, 800.0), (1280.0, 720.0), 30.0, 8.0));
+        // Very wide pane, desktop page: side by side.
+        assert!(!stack_vertically((2000.0, 600.0), (1280.0, 720.0), 30.0, 8.0));
     }
 
     #[test]
