@@ -25,6 +25,8 @@ const SLOW_BUILD: Duration = Duration::from_millis(16);
 const SLOW_INTERVAL: Duration = Duration::from_millis(33);
 /// A burst ends after this long without input.
 const BURST_QUIET: Duration = Duration::from_millis(300);
+/// Long bursts (playback, long scrolls) are reported in chunks of this length.
+const BURST_CHUNK: Duration = Duration::from_secs(5);
 
 thread_local! {
     static DECODES: Cell<(u32, Duration)> = const { Cell::new((0, Duration::ZERO)) };
@@ -39,6 +41,14 @@ pub fn ui_decode(jpeg: &[u8]) -> Option<Arc<RenderImage>> {
         d.set((n + 1, t + started.elapsed()));
     });
     out
+}
+
+/// A frame decoded off the UI thread reached the screen.
+pub fn count_decode() {
+    DECODES.with(|d| {
+        let (n, t) = d.get();
+        d.set((n + 1, t));
+    });
 }
 
 fn take_decodes() -> (u32, Duration) {
@@ -77,6 +87,8 @@ struct Burst {
     total_interval: Duration,
     slowest_build: Duration,
     total_build: Duration,
+    /// Frames decoded on the UI thread during the burst.
+    decodes: u32,
     ctx: FrameCtx,
 }
 
@@ -107,6 +119,7 @@ impl Perf {
                     total_interval: Duration::ZERO,
                     slowest_build: Duration::ZERO,
                     total_build: Duration::ZERO,
+                    decodes: 0,
                     ctx: FrameCtx::default(),
                 });
             }
@@ -145,9 +158,19 @@ impl Perf {
             record("slow_frame", prev, prev + iv, attrs);
         }
 
+        if in_burst
+            && let Some(b) = &self.burst
+            && b.started.elapsed().is_ok_and(|e| e >= BURST_CHUNK)
+        {
+            // Report this chunk; the next input starts a fresh one.
+            let area = b.area;
+            self.finish_burst();
+            self.input(area);
+        }
         match &mut self.burst {
             Some(b) if in_burst => {
                 b.frames += 1;
+                b.decodes += decodes;
                 b.ctx = ctx;
                 b.slowest_build = b.slowest_build.max(build);
                 b.total_build += build;
@@ -182,6 +205,7 @@ impl Perf {
             slowest_frame_ms = format!("{:.1}", ms(b.slowest_interval)),
             avg_build_ms = format!("{:.1}", ms(avg_build)),
             slowest_build_ms = format!("{:.1}", ms(b.slowest_build)),
+            decodes = b.decodes,
             test_rows = b.ctx.test_rows,
             "scroll burst"
         );
@@ -195,6 +219,7 @@ impl Perf {
             KeyValue::new("frame.slowest_ms", ms(b.slowest_interval)),
             KeyValue::new("build.avg_ms", ms(avg_build)),
             KeyValue::new("build.slowest_ms", ms(b.slowest_build)),
+            KeyValue::new("frame.decodes", i64::from(b.decodes)),
         ]);
         record("ui_scroll", b.started, wall_end, attrs);
     }

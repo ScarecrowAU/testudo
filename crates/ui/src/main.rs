@@ -1,5 +1,6 @@
 mod app;
 mod bridge;
+mod decode;
 mod fonts;
 mod logic;
 mod model;

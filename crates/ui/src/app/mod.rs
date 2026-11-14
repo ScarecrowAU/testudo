@@ -291,6 +291,15 @@ impl TestudoApp {
                 }
                 window.focus(&app.focus_handle, cx);
             }
+            // Test hook (debug builds only): play the focused recording at 0.25×.
+            #[cfg(debug_assertions)]
+            if s.focus_page.is_some()
+                && std::env::var_os("TESTUDO_DEBUG_PLAY").is_some()
+                && let Some(f) = app.replay.as_mut().and_then(|r| r.view.focus.as_mut())
+            {
+                f.speed = 0.25;
+                f.playing = true;
+            }
             // Test hook (debug builds only): press "Re-run test" in that focus.
             #[cfg(debug_assertions)]
             if s.focus_page.is_some() && std::env::var_os("TESTUDO_DEBUG_RERUN").is_some() {
@@ -720,17 +729,27 @@ impl TestudoApp {
             animate |= replay.exporter.poll();
         }
         animate |= self.live.reap(now_ms(), &mut self.retired);
+        let mut playing: Option<&'static str> = None;
         for w in [Which::Live, Which::Replay] {
             let running_live = w == Which::Live;
             let steps = self.compare_steps(w);
             let r = self.with_focus(w, |f, page, store, retired| {
                 let running = running_live && page.closed_at.is_none() && f.recorded.is_none();
                 let a = f.tick(page, running, dt_ms);
-                f.update_image(page, store, retired);
-                f.update_compare(page, &steps, retired);
-                a
+                if f.playing {
+                    playing = Some(if f.compare.is_some() { "focus_playback_compare" } else { "focus_playback" });
+                }
+                let decoding = f.update_image(page, store, retired);
+                let decoding_compare = f.update_compare(page, &steps, retired);
+                // Keep frames coming until in-flight decodes land.
+                a || decoding || decoding_compare
             });
             animate |= r.unwrap_or(false);
+        }
+        // Playback counts as continuous input, so its frame rate is measured
+        // and logged like a scroll burst.
+        if let Some(area) = playing {
+            self.perf.input(area);
         }
         animate
     }

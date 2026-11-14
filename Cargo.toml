@@ -31,3 +31,10 @@ opentelemetry-otlp = { version = "0.33.1", default-features = false, features = 
 opentelemetry-appender-tracing = "0.33.1"
 tracing-opentelemetry = "0.34.0"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
+
+# Dependencies (gpui, image decoding, sqlite) optimised even in dev builds:
+# unoptimised, a recorded frame takes ~100 ms to decode and playback in
+# `make dev` drops to ~10 fps. Built once and cached; our own crates still
+# compile at dev speed.
+[profile.dev.package."*"]
+opt-level = 2

@@ -261,7 +261,7 @@ pub struct PageFocus {
     pub speed: f32,
     frames: Option<FrameIndex>,
     indexed_at: Option<Instant>,
-    shown: Option<usize>,
+    loader: crate::decode::FrameLoader,
     pub image: Option<Arc<RenderImage>>,
     /// Scroll the synced lists to the scrub time on the next draw.
     pub sync_lists: bool,
@@ -297,7 +297,7 @@ pub struct CompareLane {
     /// this lane is shown by time.
     pub by_time_fallback: bool,
     frames: Option<FrameIndex>,
-    shown: Option<usize>,
+    loader: crate::decode::FrameLoader,
     pub image: Option<Arc<RenderImage>>,
 }
 
@@ -319,7 +319,7 @@ impl CompareLane {
             steps,
             by_time_fallback: false,
             frames,
-            shown: None,
+            loader: Default::default(),
             image: None,
         }
     }
@@ -351,7 +351,7 @@ impl PageFocus {
             speed: 1.0,
             frames: None,
             indexed_at: None,
-            shown: None,
+            loader: Default::default(),
             image: None,
             sync_lists: true,
             wheel_px: 0.0,
@@ -412,7 +412,7 @@ impl PageFocus {
     /// the same step (see `align_by_step`) or the same time since page open.
     /// `steps` are this page's test steps. Before its first frame: its first
     /// frame.
-    pub fn update_compare(&mut self, page: &Page, steps: &[(f64, String)], retired: &mut Retired) {
+    pub fn update_compare(&mut self, page: &Page, steps: &[(f64, String)], retired: &mut Retired) -> bool {
         let t = self.t.min(self.bounds(page).1);
         let by_step = self.compare_by_step;
         if let Some(lane) = self.compare.as_mut().and_then(|c| c.lane.as_mut()) {
@@ -421,16 +421,11 @@ impl PageFocus {
                 .flatten();
             lane.by_time_fallback = by_step && stepped.is_none();
             let at = stepped.unwrap_or(lane.prior.opened_at + (t - page.opened_at));
-            let Some(f) = lane.frames.as_mut().filter(|f| !f.entries.is_empty()) else { return };
+            let Some(f) = lane.frames.as_mut().filter(|f| !f.entries.is_empty()) else { return false };
             let i = f.index_at(at).unwrap_or(0);
-            if lane.shown == Some(i) {
-                return;
-            }
-            if let Some(image) = f.read(i).ok().and_then(|j| ui_decode(&j)) {
-                retired.extend(lane.image.replace(image));
-                lane.shown = Some(i);
-            }
+            return lane.loader.update(i, |i| f.read(i).ok(), &mut lane.image, retired);
         }
+        false
     }
 
 
@@ -494,20 +489,15 @@ impl PageFocus {
         self.seek(at, page);
     }
 
-    /// Decode the recorded frame for the scrub time if it changed.
-    pub fn update_image(&mut self, page: &Page, store: Option<&Store>, retired: &mut Retired) {
+    /// Bring the recorded frame for the scrub time on screen (decoded off
+    /// the UI thread). Returns true while a decode is in flight.
+    pub fn update_image(&mut self, page: &Page, store: Option<&Store>, retired: &mut Retired) -> bool {
         if self.follow_live || !self.ensure_index(page, store) {
-            return;
+            return false;
         }
         let f = self.frames.as_mut().unwrap();
-        let Some(i) = f.index_at(self.t) else { return };
-        if self.shown == Some(i) {
-            return;
-        }
-        if let Some(image) = f.read(i).ok().and_then(|j| ui_decode(&j)) {
-            retired.extend(self.image.replace(image));
-            self.shown = Some(i);
-        }
+        let Some(i) = f.index_at(self.t) else { return false };
+        self.loader.update(i, |i| f.read(i).ok(), &mut self.image, retired)
     }
 
     /// Advance playback/follow state for this frame. Returns true if the view
@@ -527,7 +517,10 @@ impl PageFocus {
             return true;
         }
         if self.playing {
-            self.t += dt_ms * self.speed as f64;
+            // Never play the stretch before the page opened (a History focus
+            // can start at the run's time, before this page existed).
+            let (start, _) = self.bounds(page);
+            self.t = self.t.max(start) + dt_ms * self.speed as f64;
             self.sync_lists = true;
             if self.t >= end {
                 self.t = end;
