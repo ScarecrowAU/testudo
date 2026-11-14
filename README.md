@@ -6,18 +6,28 @@ Current targets: Playwright, plus Vitest browser mode (which covers Storybook's 
 
 ## How it works
 
-```
- testudo (Rust, gpui)                       user's project (untouched)
-┌──────────────────────────┐   spawn    ┌──────────────────────────────────────┐
-│ Orchestrator ────────────┼──────────▶ │ playwright test / vitest run         │
-│                          │  env:      │   reporter  ◀─ PW_TEST_REPORTER /    │
-│ IngestServer (UDS) ◀─────┼─────┐      │               --reporter=<abs path>  │
-│   │                      │     │      │   workers   ◀─ NODE_OPTIONS=--import │
-│   ▼                      │     │      │               preload.mjs            │
-│ Hub ──▶ bridge (JPEG     │     │      │     └ playwright-core instrumentation│
-│         decode) ──▶ UI   │     └──────┤       page.screencast frames,        │
-└──────────────────────────┘  frames +  │       network, console, navigation   │
-                              events    └──────────────────────────────────────┘
+```mermaid
+flowchart LR
+  subgraph testudo["testudo (Rust, gpui)"]
+    orch[Orchestrator]
+    ingest["IngestServer<br/>(Unix socket)"]
+    hub[Hub]
+    ui["UI<br/>(frames decoded off-thread)"]
+    rec["Recorder<br/>(SQLite + frame files)"]
+    ingest --> hub
+    hub --> ui
+    hub --> rec
+  end
+  subgraph project["user's project (untouched)"]
+    runner["playwright test / vitest run"]
+    reporter["reporter<br/>PW_TEST_REPORTER<br/>or --reporter"]
+    preload["preload.mjs in every worker<br/>NODE_OPTIONS=--import<br/>screencast frames, network,<br/>console, navigation"]
+    runner --- reporter
+    runner --- preload
+  end
+  orch -- "spawn + env" --> runner
+  reporter -- "test events" --> ingest
+  preload -- "frames + events" --> ingest
 ```
 
 Nothing is installed into or written to the user's project. Runs use the project's Node version: the nearest `.nvmrc` / `.node-version` is matched against nvm and fnm installs (exact, else newest same-major), and the choice is printed at the top of the run output. Instrumentation is injected entirely through the runner's command line and environment:
