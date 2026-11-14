@@ -44,6 +44,8 @@ pub struct PagesView {
     pub focus: Option<PageFocus>,
     /// Failing tests whose full error is expanded in the run list.
     pub expanded_tests: std::collections::HashSet<String>,
+    /// Runs shown as just their header and counts in the run list.
+    pub collapsed_runs: std::collections::HashSet<String>,
     /// Output tab: stream filter, and whether it follows new lines.
     pub output_stream: StreamFilter,
     pub output_follow: bool,
@@ -69,6 +71,7 @@ impl PagesView {
             hide_repeated_stderr: true,
             focus: None,
             expanded_tests: Default::default(),
+            collapsed_runs: Default::default(),
             output_stream: StreamFilter::All,
             output_follow: true,
             output_seen: 0,
@@ -76,6 +79,12 @@ impl PagesView {
     }
 
     pub fn apply(&mut self, run_id: &str, at: f64, event: Event) {
+        // A new run collapses the finished ones in the run list. Runs still
+        // going stay open: "run all" starts several suites together.
+        if matches!(event, Event::RunStarted { .. }) && !self.model.runs.iter().any(|r| r.id == run_id) {
+            let finished = self.model.runs.iter().filter(|r| !r.is_running()).map(|r| r.id.clone());
+            self.collapsed_runs.extend(finished);
+        }
         let _ = matches!(self.model.apply(run_id, at, event), Effect::PageOpened);
         if self.selected_run.is_none() {
             self.selected_run = Some(run_id.to_owned());
@@ -607,6 +616,7 @@ impl Replay {
                 hide_repeated_stderr,
                 focus,
                 expanded_tests,
+                collapsed_runs,
                 ..
             } = old;
             retired.extend(model.take_frames());
@@ -616,6 +626,7 @@ impl Replay {
             self.view.hide_repeated_stderr = hide_repeated_stderr;
             self.view.focus = focus;
             self.view.expanded_tests = expanded_tests;
+            self.view.collapsed_runs = collapsed_runs;
             self.cursor = 0;
             self.shown.clear();
         }
@@ -767,5 +778,22 @@ mod tests {
         let runs: Vec<&str> = view.model.pages.keys().map(|k| k.run_id.as_str()).collect();
         assert_eq!(runs, ["busy"]);
         assert_eq!(view.model.runs.len(), 2, "runs stay in the run list");
+    }
+
+    #[test]
+    fn new_run_collapses_finished_runs_only() {
+        let mut view = PagesView::new();
+        page_events(&mut view, "old", 0.0);
+        view.apply("old", 2.0, Event::ProcessExited { code: Some(0) });
+        page_events(&mut view, "busy", 3.0); // still running
+        assert!(view.collapsed_runs.contains("old"));
+        page_events(&mut view, "new", 5.0);
+        assert!(view.collapsed_runs.contains("old"));
+        assert!(!view.collapsed_runs.contains("busy"), "running runs stay open");
+        assert!(!view.collapsed_runs.contains("new"));
+        // Later events of an existing run don't collapse anything else.
+        view.apply("busy", 6.0, Event::ProcessExited { code: Some(0) });
+        view.apply("new", 7.0, Event::RunBegin { total_tests: None });
+        assert!(!view.collapsed_runs.contains("busy"));
     }
 }

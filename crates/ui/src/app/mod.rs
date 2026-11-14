@@ -1023,9 +1023,33 @@ impl TestudoApp {
                     (Some(None), _) => ("Killed".to_owned(), Tone::Failed),
                 };
                 let selected = view.selected_run.as_deref() == Some(&run.id);
+                let collapsed = view.collapsed_runs.contains(&run.id);
                 let run_id = run.id.clone();
+                let toggle_id = run.id.clone();
                 let mut header = line()
-                    .gap_2()
+                    .gap_1()
+                    .child(
+                        div()
+                            .id(("run-toggle", ri))
+                            .flex_none()
+                            .w(px(18.))
+                            .text_center()
+                            .text_xs()
+                            .text_color(muted)
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .hover(|d| d.bg(theme.list_hover))
+                            .child(if collapsed { "▸" } else { "▾" })
+                            .tooltip(tooltip_text(if collapsed { "show tests" } else { "hide tests" }))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(v) = this.view_mut(w)
+                                    && !v.collapsed_runs.remove(&toggle_id)
+                                {
+                                    v.collapsed_runs.insert(toggle_id.clone());
+                                }
+                                cx.notify();
+                            })),
+                    )
                     .child(
                         div()
                             .id(("run", ri))
@@ -2048,6 +2072,10 @@ fn run_rows(view: &PagesView) -> Vec<ListRow> {
     for (ri, run) in view.model.runs.iter().enumerate().rev() {
         rows.push(ListRow::Header(ri));
         rows.push(ListRow::Counts(ri));
+        if view.collapsed_runs.contains(&run.id) {
+            rows.push(ListRow::Gap);
+            continue;
+        }
         for (ti, t) in run.tests.iter().enumerate() {
             rows.push(ListRow::Test(ri, ti));
             if t.current_step.is_some() {
