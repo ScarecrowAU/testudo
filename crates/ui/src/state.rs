@@ -44,6 +44,18 @@ pub struct PagesView {
     pub focus: Option<PageFocus>,
     /// Failing tests whose full error is expanded in the run list.
     pub expanded_tests: std::collections::HashSet<String>,
+    /// Output tab: stream filter, and whether it follows new lines.
+    pub output_stream: StreamFilter,
+    pub output_follow: bool,
+    /// Lines shown at the last render, to tell new output from a user scroll.
+    pub output_seen: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StreamFilter {
+    All,
+    Stdout,
+    Stderr,
 }
 
 impl PagesView {
@@ -57,6 +69,9 @@ impl PagesView {
             hide_repeated_stderr: true,
             focus: None,
             expanded_tests: Default::default(),
+            output_stream: StreamFilter::All,
+            output_follow: true,
+            output_seen: 0,
         }
     }
 

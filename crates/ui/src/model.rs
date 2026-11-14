@@ -29,8 +29,10 @@ pub struct Run {
     pub run_end: Option<String>,
     pub total_tests: Option<u32>,
     pub tests: Vec<Test>,
-    pub stdio: Vec<(StdStream, String)>,
-    pub adapter_logs: Vec<String>,
+    /// When the run's first event arrived (hub receive time).
+    pub started_at: f64,
+    /// Runner output and adapter notes, in arrival order.
+    pub output: Vec<OutputLine>,
 }
 
 impl Run {
@@ -60,6 +62,33 @@ impl Run {
         }
         (passed, failed, running)
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Source {
+    Stdout,
+    Stderr,
+    /// Testudo's own notes in the run output (`[testudo] …`).
+    Testudo,
+    /// Messages from the injected adapters.
+    Adapter,
+}
+
+impl Source {
+    pub fn label(self) -> &'static str {
+        match self {
+            Source::Stdout => "stdout",
+            Source::Stderr => "stderr",
+            Source::Testudo => "testudo",
+            Source::Adapter => "adapter",
+        }
+    }
+}
+
+pub struct OutputLine {
+    pub at: f64,
+    pub source: Source,
+    pub text: String,
 }
 
 pub struct Test {
@@ -137,7 +166,7 @@ impl Model {
         }
     }
 
-    fn ensure_run(&mut self, id: &str) -> &mut Run {
+    fn ensure_run(&mut self, id: &str, at: f64) -> &mut Run {
         if let Some(i) = self.runs.iter().position(|r| r.id == id) {
             return &mut self.runs[i];
         }
@@ -148,8 +177,8 @@ impl Model {
             run_end: None,
             total_tests: None,
             tests: Vec::new(),
-            stdio: Vec::new(),
-            adapter_logs: Vec::new(),
+            started_at: at,
+            output: Vec::new(),
         });
         self.runs.last_mut().unwrap()
     }
@@ -165,7 +194,7 @@ impl Model {
 
     /// Apply one event observed at `at` (hub receive time, ms since epoch).
     pub fn apply(&mut self, run_id: &str, at: f64, event: Event) -> Effect {
-        self.ensure_run(run_id);
+        self.ensure_run(run_id, at);
         let page_key = |page_id: &str| PageKey {
             run_id: run_id.to_owned(),
             page_id: page_id.to_owned(),
@@ -252,7 +281,7 @@ impl Model {
                     push_capped(&mut p.console, ConsoleRow { at, level, text }, MAX_ROWS);
                 }
             }
-            other => apply_run_event(self.ensure_run(run_id), at, other),
+            other => apply_run_event(self.ensure_run(run_id, at), at, other),
         }
         Effect::None
     }
@@ -357,9 +386,17 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
             }
         }
         Event::RunEnd { status } => run.run_end = Some(status),
-        Event::Stdio { stream, line } => push_capped(&mut run.stdio, (stream, line), MAX_LINES),
+        Event::Stdio { stream, line } => {
+            let source = match stream {
+                _ if line.starts_with("[testudo]") => Source::Testudo,
+                StdStream::Stdout => Source::Stdout,
+                StdStream::Stderr => Source::Stderr,
+            };
+            push_capped(&mut run.output, OutputLine { at, source, text: line }, MAX_LINES)
+        }
         Event::AdapterLog { level, message } => {
-            push_capped(&mut run.adapter_logs, format!("[{level}] {message}"), MAX_LINES)
+            let text = format!("[{level}] {message}");
+            push_capped(&mut run.output, OutputLine { at, source: Source::Adapter, text }, MAX_LINES)
         }
         Event::RunStarted { label, .. } => run.label = label,
         Event::ProcessExited { code } => run.exit = Some(code),

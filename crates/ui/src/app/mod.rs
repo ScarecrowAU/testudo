@@ -17,7 +17,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use testudo_core::discover::{Suite, discover};
 use testudo_core::{Orchestrator, RunHandle, RunId, RunSpec, now_ms};
-use testudo_protocol::{Event, StdStream};
+use testudo_protocol::Event;
 use testudo_store::{RunRow, Store};
 
 use crate::bridge::UiMsg;
@@ -25,8 +25,8 @@ use crate::logic::{
     REPEAT_THRESHOLD, RowState, Tone, expand_tilde, fmt_ago, fmt_dur, fmt_secs, fmt_time, status_label, url_path, looks_like_failure, ordered_pages, pane_name,
     row_state, status_icon, truncate,
 };
-use crate::model::{Model, Page, PageKey};
-use crate::state::{InspectorTab, PageFocus, PagesView, Replay, Retired};
+use crate::model::{Model, Page, PageKey, Source};
+use crate::state::{InspectorTab, PageFocus, PagesView, Replay, Retired, StreamFilter};
 
 mod focus;
 
@@ -105,6 +105,7 @@ pub struct TestudoApp {
     net_scroll: UniformListScrollHandle,
     console_scroll: UniformListScrollHandle,
     steps_scroll: UniformListScrollHandle,
+    output_scroll: UniformListScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -192,6 +193,7 @@ impl TestudoApp {
             net_scroll: UniformListScrollHandle::new(),
             console_scroll: UniformListScrollHandle::new(),
             steps_scroll: UniformListScrollHandle::new(),
+            output_scroll: UniformListScrollHandle::new(),
             _subscriptions: subscriptions,
         };
         let _ = s.rt.take();
@@ -1161,39 +1163,39 @@ impl TestudoApp {
         v_flex().size_full().child(tabs).child(div().flex_1().min_h_0().px_2().child(body))
     }
 
+    /// Runner output as a log table: time, source, severity bar, message.
     fn render_output(&mut self, w: Which, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let muted = theme.muted_foreground;
         let Some(view) = self.view(w) else { return v_flex() };
-        let muted = cx.theme().muted_foreground;
         let Some(run) = view.selected_run.as_deref().and_then(|id| view.model.run(id)) else {
-            return v_flex().child(div().text_sm().text_color(muted).child("select a run"));
+            return v_flex().child(div().p_2().text_sm().text_color(muted).child("select a run"));
         };
         // Runners and test environments write plenty of non-errors to stderr, so
         // colour by content and optionally fold stderr lines that repeat a lot.
         let mut repeats: HashMap<&str, usize> = HashMap::new();
-        for (s, l) in &run.stdio {
-            if *s == StdStream::Stderr {
-                *repeats.entry(l.as_str()).or_default() += 1;
-            }
+        for l in run.output.iter().filter(|l| l.source == Source::Stderr) {
+            *repeats.entry(l.text.as_str()).or_default() += 1;
         }
-        let hide = view.hide_repeated_stderr;
+        let (hide, stream, follow, seen) =
+            (view.hide_repeated_stderr, view.output_stream, view.output_follow, view.output_seen);
         let filter = self.filter_input.read(cx).value().to_lowercase();
-        let (text, red, gold) = (cx.theme().foreground, cx.theme().red, cx.theme().yellow);
-        let lines: Rc<Vec<(Hsla, SharedString)>> = Rc::new(
-            run.stdio
+        let started = run.started_at;
+        let rows: Rc<Vec<(f64, Source, bool, SharedString)>> = Rc::new(
+            run.output
                 .iter()
-                .filter(|(s, l)| !(hide && *s == StdStream::Stderr && repeats.get(l.as_str()).is_some_and(|n| *n > REPEAT_THRESHOLD)))
-                .map(|(s, l)| {
-                    let c = if looks_like_failure(l) {
-                        red
-                    } else if *s == StdStream::Stderr {
-                        text.opacity(0.7)
-                    } else {
-                        text
-                    };
-                    (c, SharedString::from(l.clone()))
+                .filter(|l| match stream {
+                    StreamFilter::All => true,
+                    StreamFilter::Stdout => l.source == Source::Stdout,
+                    StreamFilter::Stderr => l.source == Source::Stderr,
                 })
-                .chain(run.adapter_logs.iter().map(|l| (gold, SharedString::from(l.clone()))))
-                .filter(|(_, l)| filter.is_empty() || l.to_lowercase().contains(&filter))
+                .filter(|l| {
+                    !(hide
+                        && l.source == Source::Stderr
+                        && repeats.get(l.text.as_str()).is_some_and(|n| *n > REPEAT_THRESHOLD))
+                })
+                .filter(|l| filter.is_empty() || l.text.to_lowercase().contains(&filter))
+                .map(|l| ((l.at - started) / 1000.0, l.source, looks_like_failure(&l.text), SharedString::from(l.text.clone())))
                 .collect(),
         );
         let mut folded: Vec<(&str, usize)> =
@@ -1201,43 +1203,140 @@ impl TestudoApp {
         folded.sort_by_key(|f| std::cmp::Reverse(f.1));
         let folded_total: usize = folded.iter().map(|(_, n)| n).sum();
         let folded_detail = folded.iter().map(|(l, n)| format!("{n} × {l}")).collect::<Vec<_>>().join("\n");
+        let count = rows.len();
 
-        let count = lines.len();
-        v_flex()
-            .size_full()
+        // Follow the tail; a manual scroll away from the bottom turns it off.
+        if follow {
+            if count != seen {
+                self.output_scroll.scroll_to_bottom();
+            } else if self.output_scroll.is_scrolled_to_end() == Some(false)
+                && let Some(v) = self.view_mut(w)
+            {
+                v.output_follow = false;
+            }
+        }
+        if let Some(v) = self.view_mut(w) {
+            v.output_seen = count;
+        }
+
+        let mut chips = h_flex().gap_1();
+        for (f, name) in [(StreamFilter::All, "All"), (StreamFilter::Stdout, "stdout"), (StreamFilter::Stderr, "stderr")] {
+            chips = chips.child(
+                Button::new(SharedString::from(format!("os-{name}-{}", w as usize)))
+                    .label(name)
+                    .xsmall()
+                    .ghost()
+                    .selected(stream == f)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(v) = this.view_mut(w) {
+                            v.output_stream = f;
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
+        let toolbar = h_flex()
+            .gap_2()
+            .py_1()
+            .items_center()
+            .child(div().w(px(220.)).child(Input::new(&self.filter_input).xsmall()))
+            .child(chips)
             .child(
-                h_flex()
-                    .gap_2()
-                    .py_1()
-                    .child(div().w(px(240.)).child(Input::new(&self.filter_input).xsmall()))
-                    .child(
-                        Checkbox::new(("hide-repeats", w as usize))
-                            .label("Hide repeated stderr")
-                            .checked(hide)
-                            .on_click(cx.listener(move |this, checked: &bool, _, cx| {
-                                if let Some(v) = this.view_mut(w) {
-                                    v.hide_repeated_stderr = *checked;
-                                }
-                                cx.notify();
-                            })),
-                    )
-                    .when(hide && folded_total > 0, |row| {
-                        row.child(
+                Checkbox::new(("hide-repeats", w as usize))
+                    .label("Hide repeated stderr")
+                    .checked(hide)
+                    .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                        if let Some(v) = this.view_mut(w) {
+                            v.hide_repeated_stderr = *checked;
+                        }
+                        cx.notify();
+                    })),
+            )
+            .when(hide && folded_total > 0, |row| {
+                row.child(
+                    div()
+                        .id("folded")
+                        .text_xs()
+                        .text_color(muted)
+                        .child(format!("{folded_total} hidden"))
+                        .tooltip(tooltip_text(folded_detail)),
+                )
+            })
+            .child(div().flex_1())
+            .child(
+                Button::new(("follow", w as usize))
+                    .label("● Live")
+                    .xsmall()
+                    .when(follow, |b| b.primary())
+                    .when(!follow, |b| b.ghost())
+                    .tooltip("Follow new output (turns off when you scroll up)")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(v) = this.view_mut(w) {
+                            v.output_follow = !v.output_follow;
+                            if v.output_follow {
+                                this.output_scroll.scroll_to_bottom();
+                            }
+                        }
+                        cx.notify();
+                    })),
+            );
+
+        let mono = crate::fonts::mono();
+        let list = uniform_list(("output", w as usize), count, move |range, _, _| {
+            range
+                .map(|i| {
+                    let (rel, source, failure, text) = &rows[i];
+                    let (bar, src_color) = match source {
+                        _ if *failure => (theme.red, theme.red),
+                        Source::Stderr => (theme.yellow.opacity(0.6), theme.yellow),
+                        Source::Testudo => (theme.blue.opacity(0.6), theme.blue),
+                        Source::Adapter => (theme.yellow, theme.yellow),
+                        Source::Stdout => (theme.transparent, muted),
+                    };
+                    h_flex()
+                        .w_full()
+                        .h(px(20.))
+                        .gap_2()
+                        .items_center()
+                        .border_l_2()
+                        .border_color(bar)
+                        .when(*failure, |d| d.bg(theme.red.opacity(0.08)))
+                        .child(
                             div()
-                                .id("folded")
+                                .w(px(64.))
+                                .flex_none()
+                                .pl_1()
+                                .font_family(mono.clone())
                                 .text_xs()
                                 .text_color(muted)
-                                .child(format!("{folded_total} repeated stderr lines hidden"))
-                                .tooltip(tooltip_text(folded_detail)),
+                                .child(format!("{rel:>7.2}s")),
                         )
-                    }),
-            )
-            .child(
-                uniform_list(("output", w as usize), count, move |range, _, _| {
-                    range.map(|i| mono_row(lines[i].1.clone(), lines[i].0)).collect()
+                        .child(
+                            div()
+                                .w(px(52.))
+                                .flex_none()
+                                .text_xs()
+                                .text_color(src_color)
+                                .child(source.label()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .font_family(mono.clone())
+                                .text_xs()
+                                .text_color(if *failure { theme.red } else { theme.foreground })
+                                .child(text.clone()),
+                        )
                 })
-                .flex_1(),
-            )
+                .collect()
+        })
+        .track_scroll(&self.output_scroll)
+        .flex_1();
+
+        v_flex().size_full().child(toolbar).child(list)
     }
 
     fn render_network(&mut self, w: Which, cx: &mut Context<Self>) -> impl IntoElement {
