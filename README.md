@@ -1,3 +1,5 @@
+<p align="center"><img src="packaging/testudo.svg" alt="Testudo logo: a tortoise whose shell is a stack of locked shields" width="128"></p>
+
 # Testudo
 
 Native GUI test runner that controls, monitors and reports on multiple concurrent test suites, with live views of the headless browsers they drive.
