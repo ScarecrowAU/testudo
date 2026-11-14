@@ -53,6 +53,22 @@ make uninstall                   # run history is kept
 
 ffmpeg is optional, for MP4 export.
 
+### Updates
+
+Testudo checks GitHub for a newer version at startup and once a day, and offers to install it in place; restart to use it. Pick the channel in Settings or with `testudo-cli update --channel`:
+
+| Channel | Follows | Installs |
+|---|---|---|
+| `stable` (default) | GitHub releases | The release archive for your platform, after checking its signature against the key built into Testudo. |
+| `bleeding-edge` | Every commit on `main` | A build of that commit, made on your machine in `~/.cache/testudo/src`. Needs git and a Rust toolchain. |
+
+```sh
+testudo-cli update --check   # report whether there's a newer version
+testudo-cli update           # install it
+```
+
+Installs Testudo can't write to (such as `/usr/local` without sudo) and development builds only report updates.
+
 ## Usage
 
 ```sh
@@ -72,7 +88,7 @@ In the focus view: wheel scrubs, Shift+wheel or ←/→ steps one frame, Space p
 
 ## Configuration
 
-Recording resolution and frame rate, where recordings are kept and deleting old recordings are in Settings (⚙, top right), saved to `~/.config/testudo/settings.json` and shared with `testudo-cli`.
+Recording resolution and frame rate, where recordings are kept, deleting old recordings and updates are in Settings (⚙, top right), saved to `~/.config/testudo/settings.json` and shared with `testudo-cli`.
 
 | Environment variable | Default | Effect |
 |---|---|---|
@@ -117,6 +133,7 @@ The adapters in `adapters/js` are injected through the runner's command line and
 | `crates/store` | Run history (SQLite), frame recordings, retention, MP4 export. |
 | `crates/ui` | The `testudo` GUI (gpui via gpui-kit). |
 | `crates/cli` | `testudo-cli`. |
+| `crates/update` | Update checks and in-place installs from releases or `main`. |
 | `adapters/js` | Zero-dependency Node adapters. |
 | `examples/` | Playwright and Vitest-browser demo projects. |
 

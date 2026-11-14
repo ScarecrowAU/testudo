@@ -1,5 +1,5 @@
 //! The settings dialog: recording resolution and frame rate, where recordings
-//! are kept, and deleting old or all recordings.
+//! are kept, deleting old or all recordings, and updates.
 //!
 //! Its own view (not state captured in the dialog builder, which gpui-kit may
 //! rebuild at any time); it reads and changes the app through a weak handle.
@@ -9,6 +9,8 @@ use std::rc::Rc;
 use gpui_kit::component::WindowExt;
 use gpui_kit::component::button::ButtonVariant;
 use testudo_core::settings::{DEFAULT_FRAME_RATE, FRAME_RATES};
+
+use super::update::UpdateState;
 use testudo_store::fallback_data_dir;
 
 use super::*;
@@ -26,18 +28,22 @@ pub struct SettingsPanel {
     /// (finished runs, bytes on disk), measured when opened and after deleting.
     usage: Option<(u64, u64)>,
     status: Option<String>,
+    /// Re-render when the app changes (an update check finishing).
+    _observe: Option<Subscription>,
 }
 
 impl SettingsPanel {
     /// Built while the app is being updated (its click handler), so it must
     /// not read the app here: the store is passed in.
-    pub fn new(app: WeakEntity<TestudoApp>, store: Option<Rc<Store>>) -> Self {
+    pub fn new(app: WeakEntity<TestudoApp>, store: Option<Rc<Store>>, cx: &mut Context<Self>) -> Self {
+        let _observe = app.upgrade().map(|app| cx.observe(&app, |_, _, cx| cx.notify()));
         let mut panel = Self {
             app,
             store,
             older_than_days: DEFAULT_AGE,
             usage: None,
             status: None,
+            _observe,
         };
         panel.measure();
         panel
@@ -61,6 +67,16 @@ impl SettingsPanel {
             Err(_) => None,
         };
         cx.notify();
+    }
+
+    /// Change an update setting, then check again with it.
+    fn update_updates(&mut self, cx: &mut Context<Self>, change: impl FnOnce(&mut Settings)) {
+        self.update_settings(cx, change);
+        let _ = self.app.update(cx, |app, cx| {
+            if app.settings.check_updates {
+                app.check_for_updates(cx);
+            }
+        });
     }
 
     fn pick_location(&mut self, cx: &mut Context<Self>) {
@@ -228,6 +244,38 @@ impl Render for SettingsPanel {
         });
         let days = self.older_than_days;
 
+        let channel = choice_menu(
+            "set-channel",
+            channel_label(settings.update_channel).to_owned(),
+            UpdateChannel::ALL
+                .iter()
+                .map(|&c| (channel_label(c).to_owned(), c == settings.update_channel, c)),
+            {
+                let this = this.clone();
+                move |c, cx| {
+                    let _ = this.update(cx, |p, cx| p.update_updates(cx, |s| s.update_channel = c));
+                }
+            },
+        );
+        let channel_hint = match settings.update_channel {
+            UpdateChannel::Stable => "Signed releases from GitHub.",
+            UpdateChannel::BleedingEdge => {
+                "Every commit on main, built on this machine. Needs git and a Rust toolchain."
+            }
+        };
+        let (update_status, update_color) = match &app.updates.state {
+            UpdateState::Idle => (String::new(), muted),
+            UpdateState::Checking => ("Checking…".to_owned(), muted),
+            UpdateState::UpToDate => ("Up to date.".to_owned(), theme.green),
+            UpdateState::CheckFailed(e) => (e.clone(), theme.yellow),
+            UpdateState::Available(u) => (format!("{} is available.", u.label), theme.yellow),
+            UpdateState::Installing { label, .. } => (format!("Updating to {label}…"), muted),
+            UpdateState::Installed(label) => (format!("Updated to {label}. Restart to use it."), theme.green),
+            UpdateState::InstallFailed(e) => (format!("Update failed: {e}"), theme.red),
+        };
+        let not_updatable = app.updates.install.as_ref().err().map(|e| e.to_string());
+        let check_updates = settings.check_updates;
+
         v_flex()
             .gap_3()
             .child(section("RECORDING"))
@@ -324,6 +372,50 @@ impl Render for SettingsPanel {
                     .on_click(cx.listener(|p, _, window, cx| p.confirm_delete(None, window, cx)))
                     .into_any_element(),
             ))
+            .child(div().h(px(1.)).bg(theme.border))
+            .child(section("UPDATES"))
+            .child(row(
+                "Check for updates",
+                Some("At startup and once a day."),
+                Checkbox::new("check-updates")
+                    .checked(check_updates)
+                    .on_click(cx.listener(|p, checked: &bool, _, cx| {
+                        let on = *checked;
+                        p.update_updates(cx, |s| s.check_updates = on)
+                    }))
+                    .into_any_element(),
+            ))
+            .child(row("Channel", Some(channel_hint), channel.into_any_element()))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .flex_none()
+                            .child(format!("Testudo {}", testudo_update::current())),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(update_color)
+                            .child(update_status),
+                    )
+                    .child(
+                        button("check-now")
+                            .label("Check now")
+                            .small()
+                            .outline()
+                            .on_click(cx.listener(|p, _, _, cx| {
+                                let _ = p.app.update(cx, |app, cx| app.check_for_updates(cx));
+                            })),
+                    ),
+            )
+            .children(not_updatable.map(|why| div().text_xs().text_color(muted).child(why)))
             .children(
                 self.status
                     .clone()
@@ -357,6 +449,13 @@ fn choice_menu<T: Copy + 'static>(
             }
             menu
         })
+}
+
+fn channel_label(c: UpdateChannel) -> &'static str {
+    match c {
+        UpdateChannel::Stable => "Stable",
+        UpdateChannel::BleedingEdge => "Bleeding edge",
+    }
 }
 
 fn rate_label(fps: u32) -> String {

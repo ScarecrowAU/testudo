@@ -7,6 +7,7 @@
 //! testudo-cli show <run-id>
 //! testudo-cli export <run-id> <page-id> <out.mp4> [--fps N]
 //! testudo-cli prune [--keep N] [--max-frames-mb N]
+//! testudo-cli update [--check] [--channel stable|bleeding-edge]
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,6 +29,9 @@ const USAGE: &str = "usage:
   testudo-cli show <run-id>
   testudo-cli export <run-id> <page-id> <out.mp4> [--fps N]
   testudo-cli prune [--keep N] [--max-frames-mb N]
+  testudo-cli update [--check] [--channel stable|bleeding-edge]
+                                           install a newer Testudo (--check only reports it);
+                                           the channel defaults to the one in Settings
 
 data dir: $TESTUDO_DATA_DIR, else $XDG_DATA_HOME/testudo, else ~/.local/share/testudo
 retention: TESTUDO_KEEP_RUNS (200), TESTUDO_MAX_FRAMES_MB (5120), TESTUDO_KEEP_FRAMES=all|failed";
@@ -53,6 +57,7 @@ fn main() -> Result<()> {
         Some("history") => history(&args[1..], &data),
         Some("show") => show(args.get(1).context(USAGE)?, &data),
         Some("export") => export(&args[1..], &data),
+        Some("update") => update(&args[1..]),
         Some("prune") => {
             let mut retention = Retention::from_env();
             if let Some(n) = flag_value(&args[1..], "--keep") {
@@ -75,6 +80,31 @@ fn main() -> Result<()> {
             std::process::exit(2);
         }
     }
+}
+
+fn update(args: &[String]) -> Result<()> {
+    use testudo_core::settings::{Settings, UpdateChannel};
+    let channel = match flag_value(args, "--channel") {
+        Some(name) => UpdateChannel::parse(name).with_context(|| format!("unknown channel {name}\n{USAGE}"))?,
+        None => Settings::load().update_channel,
+    };
+    println!(
+        "Testudo {} on the {} channel",
+        testudo_update::current(),
+        channel.name()
+    );
+    let Some(update) = testudo_update::check(channel)? else {
+        println!("Up to date.");
+        return Ok(());
+    };
+    println!("{} is available: {}", update.label, update.url);
+    if args.iter().any(|a| a == "--check") {
+        return Ok(());
+    }
+    let install = testudo_update::Install::detect()?;
+    testudo_update::install(&update, &install, &mut |line| eprintln!("{line}"))?;
+    println!("Updated to {}. Restart Testudo to use it.", update.label);
+    Ok(())
 }
 
 fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {

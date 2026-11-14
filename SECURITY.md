@@ -12,8 +12,16 @@ Only the latest release gets security fixes.
 
 ## Verifying releases
 
-Release archives carry a build provenance attestation from this repository's CI:
+Release archives are signed with minisign. Testudo's updater checks the signature before installing anything. To check one by hand:
 
 ```sh
-gh attestation verify testudo-<version>-<os>-<arch>.tar.gz --repo ScarecrowAU/testudo
+minisign -V -P RWSmCfcnTJgsZrV6+H0NIc6Fi9I+ydhUDLazPG5hFYvAXpZtkmNcOTeJ -m testudo-<version>-<target>.tar.gz
 ```
+
+They also carry a build provenance attestation from this repository's CI:
+
+```sh
+gh attestation verify testudo-<version>-<target>.tar.gz --repo ScarecrowAU/testudo
+```
+
+The `bleeding-edge` update channel builds `main` from source over HTTPS instead, so it relies on GitHub and this repository's branch protection rather than a signature.
