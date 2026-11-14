@@ -469,7 +469,7 @@ impl TestudoApp {
         let controls = h_flex()
             .gap_1()
             .items_center()
-            .child(Button::new("f-start").label("⏮").xsmall().ghost().tooltip("Start").on_click(cx.listener(
+            .child(Button::new("f-start").icon(media_icon("skip-back")).small().ghost().tooltip("Start").on_click(cx.listener(
                 move |this, _, _, cx| {
                     this.with_focus(w, |f, page, _, _| {
                         let (s, _) = f.bounds(page);
@@ -480,8 +480,8 @@ impl TestudoApp {
             )))
             .child(
                 Button::new("f-prev")
-                    .label("◀")
-                    .xsmall()
+                    .icon(media_icon("step-back"))
+                    .small()
                     .ghost()
                     .tooltip("Previous frame (←, Shift+scroll)")
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -491,16 +491,17 @@ impl TestudoApp {
             )
             .child(
                 Button::new("f-play")
-                    .label(if playing { "⏸" } else { "▶" })
+                    .icon(media_icon(if playing { "pause" } else { "play" }))
                     .small()
                     .primary()
+                    .rounded(ButtonRounded::Large)
                     .tooltip("Play / pause (Space)")
                     .on_click(cx.listener(|this, _, window, cx| this.on_toggle_play(&TogglePlay, window, cx))),
             )
             .child(
                 Button::new("f-next")
-                    .label("▶|")
-                    .xsmall()
+                    .icon(media_icon("step-forward"))
+                    .small()
                     .ghost()
                     .tooltip("Next frame (→, Shift+scroll)")
                     .on_click(cx.listener(move |this, _, _, cx| {

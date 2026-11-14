@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::{Button, ButtonRounded, ButtonVariants};
+use gpui_kit::component::Icon;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
@@ -691,12 +692,16 @@ fn speed_menu(
 ) -> impl IntoElement {
     let app = cx.entity().downgrade();
     let set = Rc::new(set);
+    // An outlined chip with a caret, like the speed pickers in session-replay
+    // and video players, so it reads as a control rather than a label.
     Button::new(id)
         .label(speed_label(current))
-        .xsmall()
-        .ghost()
+        .small()
+        .outline()
+        .dropdown_caret(true)
         .tooltip("Playback speed")
         .dropdown_menu(move |mut menu, _, _| {
+            menu = menu.label("Playback speed");
             for s in crate::state::SPEEDS {
                 let (app, set) = (app.clone(), set.clone());
                 menu = menu.item(PopupMenuItem::new(speed_label(s)).checked(s == current).on_click(move |_, _, cx| {
@@ -712,6 +717,11 @@ fn speed_menu(
 
 fn speed_label(s: f32) -> String {
     format!("{s}×")
+}
+
+/// A Lucide icon bundled with gpui-kit's assets.
+fn media_icon(name: &str) -> Icon {
+    Icon::empty().path(format!("icons/{name}.svg"))
 }
 
 fn mono_row(text: impl Into<SharedString>, color: Hsla) -> Div {
@@ -1968,7 +1978,22 @@ impl TestudoApp {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(Button::new("tl-play").label(if playing { "⏸" } else { "▶" }).xsmall().on_click(cx.listener(
+                    .child(Button::new("tl-start").icon(media_icon("skip-back")).small().ghost().tooltip("Start").on_click(cx.listener(
+                        |this, _, _, cx| {
+                            if let (Some(r), Some(store)) = (this.replay.as_mut(), this.store.clone()) {
+                                let s = r.start;
+                                r.seek(s, &store, &mut this.retired);
+                            }
+                            cx.notify();
+                        },
+                    )))
+                    .child(Button::new("tl-play")
+                        .icon(media_icon(if playing { "pause" } else { "play" }))
+                        .small()
+                        .primary()
+                        .rounded(ButtonRounded::Large)
+                        .tooltip("Play / pause")
+                        .on_click(cx.listener(
                         |this, _, _, cx| {
                             if let (Some(r), Some(store)) = (this.replay.as_mut(), this.store.clone()) {
                                 if !r.playing && r.t >= r.end {
@@ -1976,15 +2001,6 @@ impl TestudoApp {
                                     r.seek(s, &store, &mut this.retired);
                                 }
                                 r.playing = !r.playing;
-                            }
-                            cx.notify();
-                        },
-                    )))
-                    .child(Button::new("tl-start").label("⏮").xsmall().tooltip("Start").on_click(cx.listener(
-                        |this, _, _, cx| {
-                            if let (Some(r), Some(store)) = (this.replay.as_mut(), this.store.clone()) {
-                                let s = r.start;
-                                r.seek(s, &store, &mut this.retired);
                             }
                             cx.notify();
                         },

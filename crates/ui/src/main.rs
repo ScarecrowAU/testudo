@@ -95,7 +95,7 @@ fn main() -> Result<()> {
     });
 
     let startup = Rc::new(Cell::new(Some(startup)));
-    gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx| {
+    gpui_kit::application().with_assets(AppAssets).run(move |cx| {
         gpui_kit::init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
         {
@@ -147,6 +147,29 @@ fn main() -> Result<()> {
     }
     drop(telemetry);
     Ok(())
+}
+
+// gpui-kit's `Assets` embeds only the icons its components use; add the
+// player's media icons.
+gpui_kit::assets::icon_assets!(MediaIcons, [Play, Pause, SkipBack, StepBack, StepForward]);
+
+struct AppAssets;
+
+impl gpui_kit::AssetSource for AppAssets {
+    fn load(&self, path: &str) -> gpui_kit::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        if let Some(bytes) = MediaIcons.load(path)? {
+            return Ok(Some(bytes));
+        }
+        gpui_kit::assets::Assets.load(path)
+    }
+
+    fn list(&self, path: &str) -> gpui_kit::Result<Vec<gpui_kit::SharedString>> {
+        let mut paths = gpui_kit::assets::Assets.list(path)?;
+        paths.extend(MediaIcons.list(path)?);
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
 }
 
 #[cfg(unix)]
