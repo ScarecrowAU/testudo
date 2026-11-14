@@ -40,8 +40,10 @@ install: build ## build, then install to $(PREFIX) (default ~/.local)
 	install -m 755 $(addprefix target/release/,$(BINS)) $(BINDIR)/
 	install -m 644 $(ADAPTERS) $(ADAPTERDIR)/
 	install -m 644 packaging/testudo.desktop $(APPDIR)/
-	install -Dm 644 packaging/testudo.svg $(ICONDIR)/scalable/apps/testudo.svg
-	for s in $(ICON_SIZES); do install -Dm 644 packaging/icons/testudo-$$s.png $(ICONDIR)/$${s}x$${s}/apps/testudo.png; done
+	# install -d then -m, not GNU-only -D, so this also works with BSD install (macOS)
+	install -d $(ICONDIR)/scalable/apps
+	install -m 644 packaging/testudo.svg $(ICONDIR)/scalable/apps/testudo.svg
+	for s in $(ICON_SIZES); do install -d $(ICONDIR)/$${s}x$${s}/apps && install -m 644 packaging/icons/testudo-$$s.png $(ICONDIR)/$${s}x$${s}/apps/testudo.png; done
 	-[ -n "$(DESTDIR)" ] || ! command -v gtk-update-icon-cache >/dev/null 2>&1 || gtk-update-icon-cache -qtf $(ICONDIR)
 	-[ -n "$(DESTDIR)" ] || ! command -v update-desktop-database >/dev/null 2>&1 || update-desktop-database $(APPDIR)
 	@echo "installed to $(DESTDIR)$(PREFIX)"

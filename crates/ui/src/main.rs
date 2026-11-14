@@ -51,7 +51,7 @@ fn main() -> Result<()> {
     let project_dir = startup
         .project_dir
         .clone()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        .unwrap_or_else(default_project_dir);
     startup.project_dir = Some(project_dir);
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
@@ -197,4 +197,14 @@ async fn next_stop_signal() -> &'static str {
 async fn next_stop_signal() -> &'static str {
     let _ = tokio::signal::ctrl_c().await;
     "Ctrl+C"
+}
+
+/// The working directory, or home when started at `/` (how macOS launches
+/// apps from Finder and the Dock), so startup never scans the whole disk.
+fn default_project_dir() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    if cwd.parent().is_some() {
+        return cwd;
+    }
+    std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from).unwrap_or(cwd)
 }

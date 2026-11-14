@@ -3,7 +3,7 @@
 //! Killing the runner's process group is not enough: runners start helpers in
 //! their own session/group (Playwright's `webServer` is spawned detached), and
 //! those survive a group kill and get reparented. So when a stop is requested
-//! we snapshot every descendant (via `/proc` on Linux), and once the runner has
+//! we snapshot every descendant (`/proc` on Linux, libproc on macOS), and once the runner has
 //! exited, clean up whatever in that snapshot is still alive. Each process is
 //! identified by (pid, start time) so a recycled pid is never signalled.
 
@@ -43,16 +43,8 @@ pub fn signal_group(pgid: i32, sig: Sig) {
 pub fn signal_group(_pgid: i32, _sig: Sig) {}
 
 /// All current descendants of `root` (not including `root`).
-#[cfg(target_os = "linux")]
 pub fn descendants(root: i32) -> Vec<Proc> {
-    let Ok(entries) = std::fs::read_dir("/proc") else { return vec![] };
-    let mut all: Vec<(Proc, i32)> = Vec::new();
-    for e in entries.flatten() {
-        let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<i32>().ok()) else { continue };
-        if let Some((p, ppid)) = stat(pid) {
-            all.push((p, ppid));
-        }
-    }
+    let all = all_procs();
     let mut out = Vec::new();
     let mut frontier = vec![root];
     while let Some(parent) = frontier.pop() {
@@ -66,23 +58,79 @@ pub fn descendants(root: i32) -> Vec<Proc> {
     out
 }
 
-#[cfg(not(target_os = "linux"))]
-pub fn descendants(_root: i32) -> Vec<Proc> {
-    // TODO: libproc on macOS, Toolhelp/Job objects on Windows.
+/// Is this exact process (pid + start time) still alive?
+pub fn alive(p: &Proc) -> bool {
+    stat(p.pid).is_some_and(|(now, _)| now.start_time == p.start_time)
+}
+
+/// Every process on the system with its parent pid.
+#[cfg(target_os = "linux")]
+fn all_procs() -> Vec<(Proc, i32)> {
+    let Ok(entries) = std::fs::read_dir("/proc") else { return vec![] };
+    entries
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<i32>().ok())
+        .filter_map(stat)
+        .collect()
+}
+
+/// Parse `/proc/<pid>/stat`: returns the process and its parent pid.
+#[cfg(target_os = "linux")]
+fn stat(pid: i32) -> Option<(Proc, i32)> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // comm (field 2) may contain spaces and parens; fields resume after the last ')'.
+    let rest = &text[text.rfind(')')? + 2..];
+    let f: Vec<&str> = rest.split_whitespace().collect();
+    // rest[0] = state (field 3) => field N is f[N - 3]
+    let ppid = f.get(1)?.parse().ok()?;
+    let pgid = f.get(2)?.parse().ok()?;
+    let start_time = f.get(19)?.parse().ok()?;
+    Some((Proc { pid, pgid, start_time }, ppid))
+}
+
+/// Every process on the system with its parent pid (libproc).
+#[cfg(target_os = "macos")]
+fn all_procs() -> Vec<(Proc, i32)> {
+    // SAFETY: a null buffer asks libproc for the current pid count.
+    let n = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if n <= 0 {
+        return vec![];
+    }
+    // Headroom for processes started between the two calls.
+    let mut pids = vec![0i32; n as usize + 64];
+    let bytes = (pids.len() * std::mem::size_of::<i32>()) as i32;
+    // SAFETY: the buffer is `bytes` long; libproc returns how many pids it wrote.
+    let n = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    pids.truncate(n.max(0) as usize);
+    pids.into_iter().filter(|&pid| pid > 0).filter_map(stat).collect()
+}
+
+/// One process's group, parent and start time (libproc `PROC_PIDTBSDINFO`).
+#[cfg(target_os = "macos")]
+fn stat(pid: i32) -> Option<(Proc, i32)> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+    // SAFETY: `info` is a properly sized, writable proc_bsdinfo.
+    let got = unsafe {
+        libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size)
+    };
+    if got != size {
+        return None;
+    }
+    let start_time = info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec;
+    let proc = Proc { pid, pgid: info.pbi_pgid as i32, start_time };
+    Some((proc, info.pbi_ppid as i32))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn all_procs() -> Vec<(Proc, i32)> {
+    // TODO: Toolhelp/Job objects on Windows.
     vec![]
 }
 
-/// Is this exact process (pid + start time) still alive?
-pub fn alive(p: &Proc) -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        stat(p.pid).is_some_and(|(now, _)| now.start_time == p.start_time)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = p;
-        false
-    }
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn stat(_pid: i32) -> Option<(Proc, i32)> {
+    None
 }
 
 /// Signal the process groups of the snapshot's survivors (each group once).
@@ -103,21 +151,7 @@ pub fn signal_survivors(snapshot: &[Proc], skip_pgid: i32, sig: Sig) -> usize {
     groups.len()
 }
 
-/// Parse `/proc/<pid>/stat`: returns the process and its parent pid.
-#[cfg(target_os = "linux")]
-fn stat(pid: i32) -> Option<(Proc, i32)> {
-    let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // comm (field 2) may contain spaces and parens; fields resume after the last ')'.
-    let rest = &text[text.rfind(')')? + 2..];
-    let f: Vec<&str> = rest.split_whitespace().collect();
-    // rest[0] = state (field 3) => field N is f[N - 3]
-    let ppid = f.get(1)?.parse().ok()?;
-    let pgid = f.get(2)?.parse().ok()?;
-    let start_time = f.get(19)?.parse().ok()?;
-    Some((Proc { pid, pgid, start_time }, ppid))
-}
-
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
     use std::os::unix::process::CommandExt;
@@ -127,7 +161,8 @@ mod tests {
     fn finds_and_kills_detached_grandchild() {
         // bash (own group) -> setsid sleep (own session/group), like a detached webServer.
         let mut child = Command::new("bash")
-            .args(["-c", "setsid sleep 30 & echo $!; wait"])
+            // perl rather than setsid(1), which macOS lacks.
+            .args(["-c", "perl -MPOSIX -e 'POSIX::setsid(); sleep 30' & echo $!; wait"])
             .stdout(std::process::Stdio::piped())
             .process_group(0)
             .spawn()

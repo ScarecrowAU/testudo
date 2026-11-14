@@ -1726,7 +1726,8 @@ impl TestudoApp {
                     .tooltip("Open exports folder")
                     .on_click(move |_, _, _| {
                         let _ = std::fs::create_dir_all(&dir);
-                        let _ = std::process::Command::new("xdg-open").arg(&dir).spawn();
+                        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+                        let _ = std::process::Command::new(opener).arg(&dir).spawn();
                     }),
             );
             if let Some(s) = exporter.status.clone() {

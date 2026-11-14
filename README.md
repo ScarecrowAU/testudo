@@ -152,7 +152,7 @@ Running several suites at once on one machine can make timing-sensitive tests fl
 
 ## Stopping runs
 
-Stop (button), closing the window, Ctrl+C, SIGTERM and SIGHUP all stop runs the way a terminal would: SIGINT to the runner's process group so it runs its own teardown (Playwright stops its `webServer`, reporters flush), escalating to SIGTERM after 5s and SIGKILL 2s later. Helpers that left the process group (Playwright starts `webServer` detached) are found from a `/proc` snapshot taken when the stop began and are cleaned up too, matched by pid and start time. The recorder then writes each run's final status before Testudo exits. A second signal to the GUI exits immediately. Sockets left by a crashed Testudo are removed on next start.
+Stop (button), closing the window, Ctrl+C, SIGTERM and SIGHUP all stop runs the way a terminal would: SIGINT to the runner's process group so it runs its own teardown (Playwright stops its `webServer`, reporters flush), escalating to SIGTERM after 5s and SIGKILL 2s later. Helpers that left the process group (Playwright starts `webServer` detached) are found from a process snapshot (`/proc` on Linux, libproc on macOS) taken when the stop began and are cleaned up too, matched by pid and start time. The recorder then writes each run's final status before Testudo exits. A second signal to the GUI exits immediately. Sockets left by a crashed Testudo are removed on next start.
 
 ## Watching and scrubbing a page
 
@@ -213,7 +213,7 @@ Fonts are resolved per platform (fontconfig on Linux), since gpui needs concrete
 - Unix only (UDS + process groups). Windows needs a named-pipe listener and Job objects.
 - Replay decodes frames on the UI thread; fine for a handful of pages, should move off-thread for large grids.
 - Retention settings are env-only; no settings UI yet.
-- Descendant cleanup uses `/proc` (Linux); elsewhere only the process group is stopped.
+- Descendant cleanup covers Linux (`/proc`) and macOS (libproc); elsewhere only the process group is stopped.
 - Node selection covers nvm and fnm only (not mise, volta, asdf, or `lts/*` aliases).
 - Playwright 1.60 on Node 26 prints its own `DEP0205 module.register()` warnings; they are not from Testudo.
 - Vitest frames are per run, not per test (all tests share one page); correlate by reporter timestamps.

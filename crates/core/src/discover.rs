@@ -263,7 +263,7 @@ fn missing_chromium(dir: &Path) -> Option<String> {
     let cache = std::env::var_os("PLAYWRIGHT_BROWSERS_PATH")
         .filter(|p| p != "0")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache/ms-playwright")))?;
+        .or_else(default_browsers_path)?;
     let installed = ["chromium", "chromium-headless-shell"].iter().any(|name| {
         revision(name).is_some_and(|rev| cache.join(format!("{}-{rev}", name.replace('-', "_"))).exists())
     });
@@ -274,6 +274,22 @@ fn missing_chromium(dir: &Path) -> Option<String> {
     Some(format!(
         "Chromium for Playwright {version} is not installed; run `playwright install chromium` in this directory"
     ))
+}
+
+/// Playwright's default browser cache for this platform (its registry's
+/// `cacheDirectory`): `~/Library/Caches` on macOS, `$XDG_CACHE_HOME` or
+/// `~/.cache` elsewhere.
+fn default_browsers_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
+    let cache = if cfg!(target_os = "macos") {
+        home?.join("Library/Caches")
+    } else {
+        std::env::var_os("XDG_CACHE_HOME")
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| home.map(|h| h.join(".cache")))?
+    };
+    Some(cache.join("ms-playwright"))
 }
 
 fn is_config(file_name: &str, tool: &str) -> bool {
