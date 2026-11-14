@@ -131,6 +131,8 @@ make lint
 
 `make dev` restarts only after a successful build and logs to `target/dev/testudo.log`. Set `TESTUDO_OTLP_ENDPOINT=http://<collector>:4318` (in `dev/.env` for `make dev`) to export Testudo's own traces over OTLP/HTTP.
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, conventions and how pull requests are reviewed.
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT), at your option.
