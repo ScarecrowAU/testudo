@@ -3,7 +3,7 @@
 //! (Steps / Network / Console / Output) synced to the scrub time.
 
 use super::*;
-use crate::logic::{best_grid, status_label, url_path};
+use crate::logic::{best_grid, compare_position, run_number, status_label, url_path};
 use std::sync::Arc;
 use testudo_protocol::TestStatus;
 use crate::state::{ConsoleFilter, FocusTab, NetFilter};
@@ -610,7 +610,8 @@ impl TestudoApp {
                         .child(frame)
                         .into_any_element(),
                 ];
-                for (label, st, image) in cells {
+                for (k, (label, st, image)) in cells.into_iter().enumerate() {
+                    let label = format!("#{} · {label}", run_number(index + k, total));
                     let (_, stn) = status_icon(st);
                     items.push(
                         v_flex()
@@ -633,11 +634,8 @@ impl TestudoApp {
                 let shown_to = (index + count).min(total);
                 let older = shown_to < total;
                 let newer = index > 0;
-                let position = if count == 1 || shown_to == index + 1 {
-                    format!("{} of {total}", index + 1)
-                } else {
-                    format!("{}–{shown_to} of {total}", index + 1)
-                };
+                // Numbered in time order (1 = oldest), so older runs count down.
+                let position = compare_position(index, count, total);
                 let small = |id: &'static str, icon: &'static str, enabled: bool, tip: &'static str| {
                     button(id)
                         .icon(media_icon(icon))

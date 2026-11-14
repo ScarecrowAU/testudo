@@ -228,6 +228,21 @@ pub fn best_grid(area: (f32, f32), frame: (f32, f32), n: usize, header: f32, gap
     best.0
 }
 
+/// Chronological number (1 = oldest) of the earlier run at `i` in a
+/// newest-first list of `total`: the one just before this run is `total`.
+pub fn run_number(i: usize, total: usize) -> usize {
+    total.saturating_sub(i)
+}
+
+/// The comparison counter for a window of `count` earlier runs starting at
+/// `index` (newest first): "oldest–newest of total" in chronological
+/// numbers, so moving to older runs counts down.
+pub fn compare_position(index: usize, count: usize, total: usize) -> String {
+    let last = (index + count).min(total).saturating_sub(1);
+    let (oldest, newest) = (run_number(last, total), run_number(index, total));
+    if oldest == newest { format!("{newest} of {total}") } else { format!("{oldest}–{newest} of {total}") }
+}
+
 pub fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_owned()
@@ -378,6 +393,20 @@ mod tests {
         assert_eq!(grid((1000.0, 900.0), (1280.0, 720.0), 6), (2, 3));
         // Three: never more cells than needed per row.
         assert_eq!(grid((900.0, 900.0), (1280.0, 720.0), 3), (1, 3));
+    }
+
+    #[test]
+    fn compare_counter_counts_in_time_order() {
+        // The run just before this one is the highest number.
+        assert_eq!(compare_position(0, 1, 28), "28 of 28");
+        assert_eq!(compare_position(0, 4, 28), "25–28 of 28");
+        // Five steps older: lower numbers.
+        assert_eq!(compare_position(5, 4, 28), "20–23 of 28");
+        // The oldest window, and fewer runs than the window.
+        assert_eq!(compare_position(24, 4, 28), "1–4 of 28");
+        assert_eq!(compare_position(0, 4, 2), "1–2 of 2");
+        assert_eq!(run_number(0, 28), 28);
+        assert_eq!(run_number(27, 28), 1);
     }
 
     #[test]
