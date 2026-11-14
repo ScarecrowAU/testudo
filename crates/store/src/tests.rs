@@ -130,14 +130,19 @@ fn recorder_persists_events_frames_and_summary() {
 
     let store = Store::open(&dir).unwrap();
     let run = store.run("r1").unwrap().unwrap();
-    assert_eq!((run.label.as_str(), run.status.as_str(), run.failed), ("demo", "failed", 1));
+    assert_eq!(
+        (run.label.as_str(), run.status.as_str(), run.failed),
+        ("demo", "failed", 1)
+    );
     assert!(run.ended_at.is_some());
     assert_eq!(store.run_events("r1").unwrap().len(), 5);
     let pages = store.run_pages("r1").unwrap();
     assert_eq!((pages[0].frames, pages[0].test_id.as_deref()), (3, Some("t1")));
     let mut idx = crate::frames::FrameIndex::open(&store.frame_path("r1", "p1")).unwrap();
     assert_eq!(idx.read(2).unwrap(), b"one");
-    let hist = store.test_history("a.spec.ts", &["a.spec.ts".into(), "works".into()], 5).unwrap();
+    let hist = store
+        .test_history("a.spec.ts", &["a.spec.ts".into(), "works".into()], 5)
+        .unwrap();
     assert_eq!(hist[0].status.as_deref(), Some("failed"));
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -192,7 +197,13 @@ fn late_test_result_after_exit_still_counts() {
         error: None,
         note: None,
     };
-    for e in [begin("a"), begin("b"), end("a"), Event::ProcessExited { code: Some(0) }, end("b")] {
+    for e in [
+        begin("a"),
+        begin("b"),
+        end("a"),
+        Event::ProcessExited { code: Some(0) },
+        end("b"),
+    ] {
         hub.publish("r1", Message::Event(e));
     }
     hub.close();
@@ -221,9 +232,13 @@ fn flaky_tests_pass_and_fail_across_recent_runs() {
             .unwrap();
     };
     // "wobbly" passes and fails; "solid" always passes; "broken" always fails.
-    for (i, (wobbly, solid, broken)) in [("passed", "passed", "failed"), ("failed", "passed", "failed"), ("timedOut", "passed", "failed")]
-        .into_iter()
-        .enumerate()
+    for (i, (wobbly, solid, broken)) in [
+        ("passed", "passed", "failed"),
+        ("failed", "passed", "failed"),
+        ("timedOut", "passed", "failed"),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let run = format!("r{i}");
         add(&run, i as f64, "wobbly", wobbly);
@@ -232,7 +247,10 @@ fn flaky_tests_pass_and_fail_across_recent_runs() {
     }
     let flaky = store.flaky_tests(10).unwrap();
     assert_eq!(flaky.len(), 1);
-    assert_eq!((flaky[0].title.as_str(), flaky[0].passes, flaky[0].fails), ("wobbly", 1, 2));
+    assert_eq!(
+        (flaky[0].title.as_str(), flaky[0].passes, flaky[0].fails),
+        ("wobbly", 1, 2)
+    );
     // Only the newest two runs: wobbly failed in both, so it is not flaky there.
     assert!(store.flaky_tests(2).unwrap().is_empty());
     std::fs::remove_dir_all(dir).unwrap();
@@ -288,7 +306,10 @@ fn delete_runs_by_age_keeps_recent_and_running_runs() {
     add_run(&store, "new", 9_000.0, 100);
     store
         .conn
-        .execute("INSERT INTO runs (id, started_at, status) VALUES ('busy', 500.0, 'running')", [])
+        .execute(
+            "INSERT INTO runs (id, started_at, status) VALUES ('busy', 500.0, 'running')",
+            [],
+        )
         .unwrap();
     assert_eq!(store.usage().unwrap().0, 2, "running runs are not counted");
 

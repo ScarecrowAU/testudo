@@ -20,7 +20,10 @@ pub struct ExportOptions {
 
 impl Default for ExportOptions {
     fn default() -> Self {
-        Self { fps: 25, tail_ms: 500.0 }
+        Self {
+            fps: 25,
+            tail_ms: 500.0,
+        }
     }
 }
 
@@ -41,12 +44,20 @@ pub fn export_mp4(frames: &Path, out: &Path, opts: &ExportOptions) -> Result<()>
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let filter = format!(
-        "scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,format=yuv420p"
-    );
+    let filter =
+        format!("scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,format=yuv420p");
     let mut child = Command::new("ffmpeg")
         .args(["-hide_banner", "-loglevel", "error", "-y"])
-        .args(["-f", "image2pipe", "-c:v", "mjpeg", "-framerate", &opts.fps.to_string(), "-i", "-"])
+        .args([
+            "-f",
+            "image2pipe",
+            "-c:v",
+            "mjpeg",
+            "-framerate",
+            &opts.fps.to_string(),
+            "-i",
+            "-",
+        ])
         .args(["-vf", &filter, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23"])
         .args(["-movflags", "+faststart"])
         .arg(out)

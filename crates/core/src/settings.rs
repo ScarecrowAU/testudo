@@ -30,7 +30,11 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { frame_max_px: DEFAULT_FRAME_MAX, frame_rate: DEFAULT_FRAME_RATE, recordings_dir: None }
+        Self {
+            frame_max_px: DEFAULT_FRAME_MAX,
+            frame_rate: DEFAULT_FRAME_RATE,
+            recordings_dir: None,
+        }
     }
 }
 
@@ -76,12 +80,14 @@ impl Settings {
 }
 
 pub fn path() -> PathBuf {
-    let dir = std::env::var_os("TESTUDO_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"))
-            .join("testudo")
-    });
+    let dir = std::env::var_os("TESTUDO_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var_os("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"))
+                .join("testudo")
+        });
     dir.join("settings.json")
 }
 
@@ -96,16 +102,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(Settings::load_from(&file), Settings::default(), "missing file");
 
-        let s = Settings { frame_max_px: 1280, frame_rate: 15, recordings_dir: Some("/data/rec".into()) };
+        let s = Settings {
+            frame_max_px: 1280,
+            frame_rate: 15,
+            recordings_dir: Some("/data/rec".into()),
+        };
         s.save_to(&file).unwrap();
         assert_eq!(Settings::load_from(&file), s);
 
         std::fs::write(&file, "{}").unwrap();
-        assert_eq!(Settings::load_from(&file).frame_max_px, DEFAULT_FRAME_MAX, "missing field");
+        assert_eq!(
+            Settings::load_from(&file).frame_max_px,
+            DEFAULT_FRAME_MAX,
+            "missing field"
+        );
         std::fs::write(&file, "not json").unwrap();
         assert_eq!(Settings::load_from(&file), Settings::default(), "bad file");
-        assert_eq!(Settings { frame_max_px: 10, ..Default::default() }.frame_max(), 160);
-        assert_eq!(Settings { frame_rate: 0, ..Default::default() }.frame_rate(), 1);
+        assert_eq!(
+            Settings {
+                frame_max_px: 10,
+                ..Default::default()
+            }
+            .frame_max(),
+            160
+        );
+        assert_eq!(
+            Settings {
+                frame_rate: 0,
+                ..Default::default()
+            }
+            .frame_rate(),
+            1
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

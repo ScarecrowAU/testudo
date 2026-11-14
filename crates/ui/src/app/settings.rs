@@ -32,7 +32,13 @@ impl SettingsPanel {
     /// Built while the app is being updated (its click handler), so it must
     /// not read the app here: the store is passed in.
     pub fn new(app: WeakEntity<TestudoApp>, store: Option<Rc<Store>>) -> Self {
-        let mut panel = Self { app, store, older_than_days: DEFAULT_AGE, usage: None, status: None };
+        let mut panel = Self {
+            app,
+            store,
+            older_than_days: DEFAULT_AGE,
+            usage: None,
+            status: None,
+        };
         panel.measure();
         panel
     }
@@ -140,7 +146,11 @@ impl Render for SettingsPanel {
         let chosen_dir = settings.recordings_dir.clone().unwrap_or_else(fallback_data_dir);
         let env_override = std::env::var_os("TESTUDO_DATA_DIR").is_some();
         // With the override, show the folder actually in use.
-        let shown_dir = if env_override { current_dir.clone().unwrap_or_else(|| chosen_dir.clone()) } else { chosen_dir.clone() };
+        let shown_dir = if env_override {
+            current_dir.clone().unwrap_or_else(|| chosen_dir.clone())
+        } else {
+            chosen_dir.clone()
+        };
         let pending_move = !env_override && current_dir.as_ref().is_some_and(|d| *d != chosen_dir);
 
         let this = cx.entity().downgrade();
@@ -148,7 +158,11 @@ impl Render for SettingsPanel {
             "set-resolution",
             format!("{0} × {0} px", settings.frame_max()),
             FRAME_SIZES.iter().map(|&px| {
-                let label = if px == DEFAULT_FRAME_MAX { format!("{px} × {px} px (default)") } else { format!("{px} × {px} px") };
+                let label = if px == DEFAULT_FRAME_MAX {
+                    format!("{px} × {px} px (default)")
+                } else {
+                    format!("{px} × {px} px")
+                };
                 (label, px == settings.frame_max(), px)
             }),
             {
@@ -161,7 +175,9 @@ impl Render for SettingsPanel {
         let rate = choice_menu(
             "set-frame-rate",
             rate_label(settings.frame_rate()),
-            FRAME_RATES.iter().map(|&fps| (rate_label(fps), fps == settings.frame_rate(), fps)),
+            FRAME_RATES
+                .iter()
+                .map(|&fps| (rate_label(fps), fps == settings.frame_rate(), fps)),
             {
                 let this = this.clone();
                 move |fps, cx| {
@@ -172,7 +188,9 @@ impl Render for SettingsPanel {
         let age = choice_menu(
             "older-than",
             days_label(self.older_than_days),
-            AGE_CHOICES.iter().map(|&d| (days_label(d), d == self.older_than_days, d)),
+            AGE_CHOICES
+                .iter()
+                .map(|&d| (days_label(d), d == self.older_than_days, d)),
             {
                 let this = this.clone();
                 move |d, cx| {
@@ -184,7 +202,14 @@ impl Render for SettingsPanel {
             },
         );
 
-        let section = |title: &'static str| div().pt_2().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(muted).child(title);
+        let section = |title: &'static str| {
+            div()
+                .pt_2()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(muted)
+                .child(title)
+        };
         let row = |label: &'static str, hint: Option<&'static str>, control: AnyElement| {
             h_flex()
                 .gap_4()
@@ -206,13 +231,22 @@ impl Render for SettingsPanel {
         v_flex()
             .gap_3()
             .child(section("RECORDING"))
-            .child(row("Resolution", Some("Frames fit within this box, keeping the page's shape."), resolution.into_any_element()))
+            .child(row(
+                "Resolution",
+                Some("Frames fit within this box, keeping the page's shape."),
+                resolution.into_any_element(),
+            ))
             .child(row(
                 "Frame rate",
                 Some("Lower rates save space; a page's last frame is always kept."),
                 rate.into_any_element(),
             ))
-            .child(div().text_xs().text_color(muted).child("Applies to runs started from now on."))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .child("Applies to runs started from now on."),
+            )
             .child(div().h(px(1.)).bg(theme.border))
             .child(section("STORAGE"))
             .child(
@@ -235,9 +269,13 @@ impl Render for SettingsPanel {
                                     .child(tilde(&shown_dir))
                                     .tooltip(tooltip_text(shown_dir.display().to_string())),
                             )
-                            .child(button("rec-dir-change").label("Change…").small().outline().on_click(
-                                cx.listener(|p, _, _, cx| p.pick_location(cx)),
-                            ))
+                            .child(
+                                button("rec-dir-change")
+                                    .label("Change…")
+                                    .small()
+                                    .outline()
+                                    .on_click(cx.listener(|p, _, _, cx| p.pick_location(cx))),
+                            )
                             .when(settings.recordings_dir.is_some(), |r| {
                                 r.child(button("rec-dir-default").label("Default").small().ghost().on_click(
                                     cx.listener(|p, _, _, cx| p.update_settings(cx, |s| s.recordings_dir = None)),
@@ -245,15 +283,17 @@ impl Render for SettingsPanel {
                             }),
                     )
                     .when(env_override, |d| {
-                        d.child(div().text_xs().text_color(theme.yellow).child("TESTUDO_DATA_DIR is set and overrides this."))
-                    })
-                    .when(pending_move, |d| {
                         d.child(
                             div()
                                 .text_xs()
                                 .text_color(theme.yellow)
-                                .child("Takes effect the next time Testudo starts. Existing recordings stay where they are."),
+                                .child("TESTUDO_DATA_DIR is set and overrides this."),
                         )
+                    })
+                    .when(pending_move, |d| {
+                        d.child(div().text_xs().text_color(theme.yellow).child(
+                            "Takes effect the next time Testudo starts. Existing recordings stay where they are.",
+                        ))
                     })
                     .child(div().text_xs().text_color(muted).child(format!("Using {usage}"))),
             )
@@ -263,11 +303,15 @@ impl Render for SettingsPanel {
                 h_flex()
                     .gap_2()
                     .child(age)
-                    .child(button("delete-older").label("Delete").small().outline().on_click(cx.listener(
-                        move |p, _, window, cx| {
-                            p.confirm_delete(Some(now_ms() - days as f64 * DAY_MS), window, cx)
-                        },
-                    )))
+                    .child(
+                        button("delete-older")
+                            .label("Delete")
+                            .small()
+                            .outline()
+                            .on_click(cx.listener(move |p, _, window, cx| {
+                                p.confirm_delete(Some(now_ms() - days as f64 * DAY_MS), window, cx)
+                            })),
+                    )
                     .into_any_element(),
             ))
             .child(row(
@@ -280,7 +324,11 @@ impl Render for SettingsPanel {
                     .on_click(cx.listener(|p, _, window, cx| p.confirm_delete(None, window, cx)))
                     .into_any_element(),
             ))
-            .children(self.status.clone().map(|s| div().text_sm().text_color(theme.green).child(s)))
+            .children(
+                self.status
+                    .clone()
+                    .map(|s| div().text_sm().text_color(theme.green).child(s)),
+            )
     }
 }
 
@@ -301,18 +349,30 @@ fn choice_menu<T: Copy + 'static>(
         .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
             for (label, checked, value) in options.iter().cloned() {
                 let on_pick = on_pick.clone();
-                menu = menu.item(PopupMenuItem::new(label).checked(checked).on_click(move |_, _, cx| on_pick(value, cx)));
+                menu = menu.item(
+                    PopupMenuItem::new(label)
+                        .checked(checked)
+                        .on_click(move |_, _, cx| on_pick(value, cx)),
+                );
             }
             menu
         })
 }
 
 fn rate_label(fps: u32) -> String {
-    if fps >= DEFAULT_FRAME_RATE { "Every repaint (up to 60 fps)".to_owned() } else { format!("{fps} fps") }
+    if fps >= DEFAULT_FRAME_RATE {
+        "Every repaint (up to 60 fps)".to_owned()
+    } else {
+        format!("{fps} fps")
+    }
 }
 
 fn days_label(d: u32) -> String {
-    if d == 1 { "1 day".to_owned() } else { format!("{d} days") }
+    if d == 1 {
+        "1 day".to_owned()
+    } else {
+        format!("{d} days")
+    }
 }
 
 fn fmt_bytes(b: u64) -> String {

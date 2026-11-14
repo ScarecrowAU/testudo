@@ -10,11 +10,11 @@
 //!   on it.)
 //! - Vitest: `--reporter` flags on the CLI.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -33,7 +33,9 @@ pub enum RunnerKind {
     Vitest,
     /// Arbitrary command; still gets the preload and socket env, so any Node process
     /// using playwright-core is instrumented.
-    Command { program: String },
+    Command {
+        program: String,
+    },
 }
 
 impl RunnerKind {
@@ -190,8 +192,12 @@ impl Orchestrator {
             .canonicalize()
             .with_context(|| format!("project dir {}", spec.cwd.display()))?;
 
-        let Launch { program, args, envs, note } =
-            build_command(&spec.kind, &cwd, spec.config.as_deref(), &spec.args, &inner.adapters)?;
+        let Launch {
+            program,
+            args,
+            envs,
+            note,
+        } = build_command(&spec.kind, &cwd, spec.config.as_deref(), &spec.args, &inner.adapters)?;
 
         let preload = inner.adapters.join("preload.mjs");
         let mut node_options = format!("--import {}", file_url(&preload));
@@ -263,7 +269,13 @@ impl Orchestrator {
             }),
         );
         for line in notes {
-            hub.publish(&id, Message::Event(Event::Stdio { stream: StdStream::Stderr, line }));
+            hub.publish(
+                &id,
+                Message::Event(Event::Stdio {
+                    stream: StdStream::Stderr,
+                    line,
+                }),
+            );
         }
         pipe_lines(child.stdout.take().unwrap(), StdStream::Stdout, hub.clone(), id.clone());
         pipe_lines(child.stderr.take().unwrap(), StdStream::Stderr, hub.clone(), id.clone());
@@ -274,51 +286,53 @@ impl Orchestrator {
         let run_id = id.clone();
         let orch = self.clone();
         let run_span = span.clone();
-        tokio::spawn(async move {
-            let pgid = child.id().map(|p| p as i32);
-            let mut snapshot = Vec::new();
-            let status = tokio::select! {
-                s = child.wait() => s,
-                // Drop the watch::Ref (not Send) before awaiting anything else.
-                _ = async { cancel_rx.wait_for(|c| *c).await.is_ok() } => {
-                    run_span.record("cancelled", true);
-                    if let Some(pgid) = pgid {
-                        // Before signalling: the tree is intact, so detached helpers
-                        // (Playwright's webServer) are still findable as descendants.
-                        snapshot = procs::descendants(pgid);
+        tokio::spawn(
+            async move {
+                let pgid = child.id().map(|p| p as i32);
+                let mut snapshot = Vec::new();
+                let status = tokio::select! {
+                    s = child.wait() => s,
+                    // Drop the watch::Ref (not Send) before awaiting anything else.
+                    _ = async { cancel_rx.wait_for(|c| *c).await.is_ok() } => {
+                        run_span.record("cancelled", true);
+                        if let Some(pgid) = pgid {
+                            // Before signalling: the tree is intact, so detached helpers
+                            // (Playwright's webServer) are still findable as descendants.
+                            snapshot = procs::descendants(pgid);
+                        }
+                        stop(&mut child, pgid).instrument(info_span!("stop_process_group")).await
                     }
-                    stop(&mut child, pgid).instrument(info_span!("stop_process_group")).await
+                };
+                if let Some(pgid) = pgid {
+                    // Leftovers in the runner's own group (normal exit or not), then
+                    // anything from the snapshot that escaped into other groups.
+                    procs::signal_group(pgid, Sig::Term);
+                    if procs::signal_survivors(&snapshot, pgid, Sig::Term) > 0 {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        procs::signal_survivors(&snapshot, pgid, Sig::Kill);
+                    }
                 }
-            };
-            if let Some(pgid) = pgid {
-                // Leftovers in the runner's own group (normal exit or not), then
-                // anything from the snapshot that escaped into other groups.
-                procs::signal_group(pgid, Sig::Term);
-                if procs::signal_survivors(&snapshot, pgid, Sig::Term) > 0 {
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    procs::signal_survivors(&snapshot, pgid, Sig::Kill);
+                // Announce the exit only after everything the run's processes sent
+                // has been published, so consumers see its final results first.
+                let drained = orch
+                    .inner
+                    .connections
+                    .drained(&run_id, Duration::from_secs(3))
+                    .instrument(info_span!("drain_adapter_connections"))
+                    .await;
+                if !drained {
+                    warn!(run = %run_id, "adapter connections still open after exit");
                 }
+                let code = status.ok().and_then(|s| s.code());
+                if let Some(c) = code {
+                    run_span.record("exit_code", c);
+                }
+                hub.publish(&run_id, Message::Event(Event::ProcessExited { code }));
+                orch.inner.active.lock().unwrap().remove(&run_id);
+                orch.inner.run_exited.notify_waiters();
             }
-            // Announce the exit only after everything the run's processes sent
-            // has been published, so consumers see its final results first.
-            let drained = orch
-                .inner
-                .connections
-                .drained(&run_id, Duration::from_secs(3))
-                .instrument(info_span!("drain_adapter_connections"))
-                .await;
-            if !drained {
-                warn!(run = %run_id, "adapter connections still open after exit");
-            }
-            let code = status.ok().and_then(|s| s.code());
-            if let Some(c) = code {
-                run_span.record("exit_code", c);
-            }
-            hub.publish(&run_id, Message::Event(Event::ProcessExited { code }));
-            orch.inner.active.lock().unwrap().remove(&run_id);
-            orch.inner.run_exited.notify_waiters();
-        }
-        .instrument(span.clone()));
+            .instrument(span.clone()),
+        );
 
         Ok(RunHandle { id, cancel: cancel_tx })
     }
@@ -338,9 +352,7 @@ fn build_command(
     user_args: &[String],
     adapters: &Path,
 ) -> Result<Launch> {
-    let user_config = user_args
-        .iter()
-        .any(|a| a == "-c" || a.starts_with("--config"));
+    let user_config = user_args.iter().any(|a| a == "-c" || a.starts_with("--config"));
     let config = config.filter(|_| !user_config);
     match kind {
         RunnerKind::Playwright => {

@@ -155,7 +155,11 @@ pub fn summary_line(text: &str) -> String {
         }
         out.push(c);
     }
-    out.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default().to_owned()
+    out.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// Where another recording of the same test should be, by test step, when
@@ -240,7 +244,11 @@ pub fn run_number(i: usize, total: usize) -> usize {
 pub fn compare_position(index: usize, count: usize, total: usize) -> String {
     let last = (index + count).min(total).saturating_sub(1);
     let (oldest, newest) = (run_number(last, total), run_number(index, total));
-    if oldest == newest { format!("{newest} of {total}") } else { format!("{oldest}–{newest} of {total}") }
+    if oldest == newest {
+        format!("{newest} of {total}")
+    } else {
+        format!("{oldest}–{newest} of {total}")
+    }
 }
 
 pub fn truncate(s: &str, max: usize) -> String {
@@ -328,11 +336,15 @@ mod tests {
     #[test]
     fn failure_heuristic() {
         assert!(!looks_like_failure("Not implemented: Window's scrollTo() method"));
-        assert!(!looks_like_failure("(node:1) ExperimentalWarning: localStorage is not available"));
+        assert!(!looks_like_failure(
+            "(node:1) ExperimentalWarning: localStorage is not available"
+        ));
         assert!(!looks_like_failure("      Tests  632 passed (632)"));
         assert!(!looks_like_failure("  11 passed, 0 failed"));
         assert!(looks_like_failure("  1 failed"));
-        assert!(looks_like_failure("Error: page.waitForURL: Test timeout of 30000ms exceeded."));
+        assert!(looks_like_failure(
+            "Error: page.waitForURL: Test timeout of 30000ms exceeded."
+        ));
         assert!(looks_like_failure(" × fails on purpose 117ms"));
         assert!(looks_like_failure("AssertionError: expected 2 to be 3"));
     }
@@ -358,12 +370,18 @@ mod tests {
         assert_eq!(at(210.0), Some(1910.0), "10ms into fill");
         assert_eq!(at(320.0), Some(2620.0), "second click, not the first");
         // Before the first step, held at the other's first step.
-        assert_eq!(align_by_step(&cur, &steps(&[(1020.0, "click")]), 50.0, 0.0, 1000.0), Some(1020.0));
+        assert_eq!(
+            align_by_step(&cur, &steps(&[(1020.0, "click")]), 50.0, 0.0, 1000.0),
+            Some(1020.0)
+        );
         // Other run is faster: held just before its next step.
         let fast = steps(&[(1100.0, "click"), (1150.0, "fill")]);
         assert_eq!(align_by_step(&cur, &fast, 190.0, 0.0, 1000.0), Some(1149.999));
         // No matching step.
-        assert_eq!(align_by_step(&cur, &steps(&[(1100.0, "goto")]), 150.0, 0.0, 1000.0), None);
+        assert_eq!(
+            align_by_step(&cur, &steps(&[(1100.0, "goto")]), 150.0, 0.0, 1000.0),
+            None
+        );
     }
 
     #[test]
@@ -372,8 +390,14 @@ mod tests {
             rerun_args("playwright", "/p/web", "/p/web/tests/a.spec.ts", 12, Some("chromium")),
             Some(vec!["tests/a.spec.ts:12".to_owned(), "--project=chromium".to_owned()])
         );
-        assert_eq!(rerun_args("vitest", "/p", "/p/src/x.test.ts", 3, Some("ignored")), Some(vec!["src/x.test.ts:3".to_owned()]));
-        assert_eq!(rerun_args("playwright", "/p", "/elsewhere/a.spec.ts", 1, None), Some(vec!["/elsewhere/a.spec.ts:1".to_owned()]));
+        assert_eq!(
+            rerun_args("vitest", "/p", "/p/src/x.test.ts", 3, Some("ignored")),
+            Some(vec!["src/x.test.ts:3".to_owned()])
+        );
+        assert_eq!(
+            rerun_args("playwright", "/p", "/elsewhere/a.spec.ts", 1, None),
+            Some(vec!["/elsewhere/a.spec.ts:1".to_owned()])
+        );
         assert_eq!(rerun_args("command", "/p", "/p/a", 1, None), None);
     }
 

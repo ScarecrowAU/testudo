@@ -4,9 +4,9 @@
 
 use super::*;
 use crate::logic::{best_grid, compare_position, run_number, status_label, url_path};
+use crate::state::{ConsoleFilter, FocusTab, NetFilter};
 use std::sync::Arc;
 use testudo_protocol::TestStatus;
-use crate::state::{ConsoleFilter, FocusTab, NetFilter};
 
 /// An earlier run's recording beside the frame: (label, status, image).
 type ComparedCell = (String, Option<TestStatus>, Option<Arc<RenderImage>>);
@@ -57,8 +57,12 @@ impl TestudoApp {
     pub(super) fn render_focus(&mut self, w: Which, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
-        let Some(view) = self.view(w) else { return div().into_any_element() };
-        let Some(focus) = view.focus.as_ref() else { return div().into_any_element() };
+        let Some(view) = self.view(w) else {
+            return div().into_any_element();
+        };
+        let Some(focus) = view.focus.as_ref() else {
+            return div().into_any_element();
+        };
         let model: &Model = focus.recorded.as_deref().unwrap_or(&view.model);
         let Some(page) = model.pages.get(&focus.key) else {
             return div().p_4().child("page no longer available").into_any_element();
@@ -107,8 +111,12 @@ impl TestudoApp {
         // Re-running needs the test's location and a runner that filters by it.
         let rerun_blocker: Option<&'static str> = match (test, model.run(&page.key.run_id)) {
             (None, _) => Some("This page isn't tied to a test"),
-            (Some(t), _) if t.file.is_none() || t.line.is_none() => Some("The runner didn't report this test's location"),
-            (_, Some(r)) if !matches!(r.runner.as_str(), "playwright" | "vitest") => Some("Only Playwright and Vitest tests can be re-run"),
+            (Some(t), _) if t.file.is_none() || t.line.is_none() => {
+                Some("The runner didn't report this test's location")
+            }
+            (_, Some(r)) if !matches!(r.runner.as_str(), "playwright" | "vitest") => {
+                Some("Only Playwright and Vitest tests can be re-run")
+            }
             (_, None) => Some("Run not found"),
             _ => None,
         };
@@ -129,8 +137,16 @@ impl TestudoApp {
                         "interrupted" => TestStatus::Interrupted,
                         _ => TestStatus::Unknown,
                     });
-                    let dur = l.prior.duration_ms.map(|d| format!(" · {}", fmt_dur(d))).unwrap_or_default();
-                    let fallback = if l.by_time_fallback { " · steps differ, by time" } else { "" };
+                    let dur = l
+                        .prior
+                        .duration_ms
+                        .map(|d| format!(" · {}", fmt_dur(d)))
+                        .unwrap_or_default();
+                    let fallback = if l.by_time_fallback {
+                        " · steps differ, by time"
+                    } else {
+                        ""
+                    };
                     let label = format!(
                         "{} ({}){dur}{fallback}",
                         fmt_time(l.prior.run_started_at),
@@ -223,9 +239,18 @@ impl TestudoApp {
             .iter()
             .map(|s| (frac(s.started), frac(s.started + s.dur.unwrap_or(0.0)), s.failed))
             .collect();
-        let ticks: Vec<(f32, bool)> = page.network.iter().map(|r| (frac(r.started), r.error.is_some() || r.status.is_some_and(|s| s >= 400))).collect();
+        let ticks: Vec<(f32, bool)> = page
+            .network
+            .iter()
+            .map(|r| (frac(r.started), r.error.is_some() || r.status.is_some_and(|s| s >= 400)))
+            .collect();
         let navs: Vec<f32> = page.navigations.iter().map(|(at, _)| frac(*at)).collect();
-        let errors: Vec<f32> = page.console.iter().filter(|c| c.level == "error").map(|c| frac(c.at)).collect();
+        let errors: Vec<f32> = page
+            .console
+            .iter()
+            .filter(|c| c.level == "error")
+            .map(|c| frac(c.at))
+            .collect();
         let cursor = frac(t);
 
         if sync {
@@ -238,7 +263,11 @@ impl TestudoApp {
         }
 
         // --- player column -------------------------------------------------
-        let status_color = if status.is_none() && !running { muted } else { tone(tn, cx) };
+        let status_color = if status.is_none() && !running {
+            muted
+        } else {
+            tone(tn, cx)
+        };
         // Title on its own row, metadata strip beneath (Browserbase-style).
         let header = v_flex()
             .gap_1()
@@ -275,7 +304,13 @@ impl TestudoApp {
                     .items_center()
                     .child(pill(status_label(status), status_color))
                     .when(!browser.is_empty(), |d| d.child(pill(browser, muted)))
-                    .child(div().flex_none().text_xs().text_color(muted).child(format!("{:.2}s", (end - start) / 1000.0)))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(format!("{:.2}s", (end - start) / 1000.0)),
+                    )
                     .children(location.map(|l| {
                         div()
                             .min_w_0()
@@ -291,7 +326,8 @@ impl TestudoApp {
                             .icon(media_icon("rotate-ccw"))
                             .small()
                             .ghost()
-                            .disabled(rerun_blocker.is_some()).when(rerun_blocker.is_some(), |b| b.cursor_default())
+                            .disabled(rerun_blocker.is_some())
+                            .when(rerun_blocker.is_some(), |b| b.cursor_default())
                             .tooltip(rerun_blocker.unwrap_or("Re-run this test and watch it live"))
                             .on_click(cx.listener(move |this, _, _, cx| this.rerun_test(w, cx))),
                     )
@@ -365,7 +401,13 @@ impl TestudoApp {
             .border_1()
             .border_color(theme.border)
             .bg(theme.secondary)
-            .child(div().flex_none().text_xs().text_color(muted).child(if url.starts_with("https") { "🔒" } else { "🌐" }))
+            .child(
+                div()
+                    .flex_none()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(if url.starts_with("https") { "🔒" } else { "🌐" }),
+            )
             .child(div().flex_1().min_w_0().truncate().text_sm().child(url.clone()))
             .child(
                 button("copy-url")
@@ -401,7 +443,13 @@ impl TestudoApp {
             })
             .when_some(skipped, |d, note| d.child(skip_card(note, &theme)))
             .when(running && follow, |d| {
-                d.child(div().absolute().top_2().left_2().child(pill("● LIVE", theme.red).bg(theme.background.opacity(0.8))))
+                d.child(
+                    div()
+                        .absolute()
+                        .top_2()
+                        .left_2()
+                        .child(pill("● LIVE", theme.red).bg(theme.background.opacity(0.8))),
+                )
             })
             .when(no_recording, |d| {
                 d.child(
@@ -469,12 +517,21 @@ impl TestudoApp {
                             window.paint_quad(fill(Bounds::new(point(x(*f), y0 + px(19.)), size(px(1.), px(9.))), c));
                         }
                         for f in &navs {
-                            window.paint_quad(fill(Bounds::new(point(x(*f), y0 + px(2.)), size(px(2.), ht - px(4.))), th.green));
+                            window.paint_quad(fill(
+                                Bounds::new(point(x(*f), y0 + px(2.)), size(px(2.), ht - px(4.))),
+                                th.green,
+                            ));
                         }
                         for f in &errors {
-                            window.paint_quad(fill(Bounds::new(point(x(*f) - px(3.), y0 + px(1.)), size(px(6.), px(4.))), th.red));
+                            window.paint_quad(fill(
+                                Bounds::new(point(x(*f) - px(3.), y0 + px(1.)), size(px(6.), px(4.))),
+                                th.red,
+                            ));
                         }
-                        window.paint_quad(fill(Bounds::new(point(x(cursor) - px(1.), y0), size(px(2.), ht)), th.foreground));
+                        window.paint_quad(fill(
+                            Bounds::new(point(x(cursor) - px(1.), y0), size(px(2.), ht)),
+                            th.foreground,
+                        ));
                     },
                 )
                 .size_full(),
@@ -494,15 +551,20 @@ impl TestudoApp {
         let controls = h_flex()
             .gap_1()
             .items_center()
-            .child(button("f-start").icon(media_icon("skip-back")).small().ghost().tooltip("Start").on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.with_focus(w, |f, page, _, _| {
-                        let (s, _) = f.bounds(page);
-                        f.seek(s, page)
-                    });
-                    cx.notify();
-                },
-            )))
+            .child(
+                button("f-start")
+                    .icon(media_icon("skip-back"))
+                    .small()
+                    .ghost()
+                    .tooltip("Start")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.with_focus(w, |f, page, _, _| {
+                            let (s, _) = f.bounds(page);
+                            f.seek(s, page)
+                        });
+                        cx.notify();
+                    })),
+            )
             .child(
                 button("f-prev")
                     .icon(media_icon("step-back"))
@@ -534,20 +596,26 @@ impl TestudoApp {
                         cx.notify();
                     })),
             )
-            .child(
-                div()
-                    .px_2()
-                    .font_family(crate::fonts::mono())
-                    .text_sm()
-                    .child(format!("{} / {}", fmt_secs(t - start), fmt_secs(end - start))),
-            )
+            .child(div().px_2().font_family(crate::fonts::mono()).text_sm().child(format!(
+                "{} / {}",
+                fmt_secs(t - start),
+                fmt_secs(end - start)
+            )))
             .child(speed_menu("f-speed", speed, cx, move |this, s| {
                 if let Some(f) = this.view_mut(w).and_then(|v| v.focus.as_mut()) {
                     f.speed = s;
                 }
             }))
             .children(frame_label.map(|l| div().text_xs().text_color(muted).child(l)))
-            .child(div().flex_1().min_w_0().truncate().text_xs().text_color(muted).child(hover_label))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(hover_label),
+            )
             .when(running, |row| {
                 row.child(
                     button("f-live")
@@ -573,7 +641,12 @@ impl TestudoApp {
                 .flex_1()
                 .min_h_0()
                 .gap_1()
-                .child(div().text_xs().text_color(muted).child("No earlier recordings of this test (retention may have removed them)"))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .child("No earlier recordings of this test (retention may have removed them)"),
+                )
                 .child(frame)
                 .into_any_element(),
             Some((cells, index, count, total)) => {
@@ -683,8 +756,13 @@ impl TestudoApp {
                 let n = items.len();
                 let area_cell = self.compare_area.clone();
                 let (area, _) = area_cell.get();
-                let grid =
-                    best_grid((f32::from(area.size.width), f32::from(area.size.height)), frame_shape, n, CELL_HEADER, CELL_GAP);
+                let grid = best_grid(
+                    (f32::from(area.size.width), f32::from(area.size.height)),
+                    frame_shape,
+                    n,
+                    CELL_HEADER,
+                    CELL_GAP,
+                );
                 area_cell.set((area, grid));
                 let measure = canvas(
                     move |bounds, window, _| {
@@ -725,7 +803,15 @@ impl TestudoApp {
                     .min_h_0()
                     .gap_1()
                     .child(toolbar)
-                    .child(v_flex().relative().flex_1().min_h_0().gap_2().child(measure).children(rows))
+                    .child(
+                        v_flex()
+                            .relative()
+                            .flex_1()
+                            .min_h_0()
+                            .gap_2()
+                            .child(measure)
+                            .children(rows),
+                    )
                     .into_any_element()
             }
         };
@@ -774,9 +860,15 @@ impl TestudoApp {
 
         let body: AnyElement = match tab {
             FocusTab::Steps => self.focus_steps(w, steps, current_step, t, cx).into_any_element(),
-            FocusTab::Network => self.focus_network(w, net, current_net, net_filter, &counts, t, cx).into_any_element(),
+            FocusTab::Network => self
+                .focus_network(w, net, current_net, net_filter, &counts, t, cx)
+                .into_any_element(),
             FocusTab::Console => self.focus_console(w, console, console_filter, t, cx).into_any_element(),
-            FocusTab::Output => div().size_full().px_2().child(self.render_output(w, window, cx)).into_any_element(),
+            FocusTab::Output => div()
+                .size_full()
+                .px_2()
+                .child(self.render_output(w, window, cx))
+                .into_any_element(),
         };
         let details = v_flex()
             .size_full()
@@ -791,7 +883,12 @@ impl TestudoApp {
 
         h_resizable("focus-split")
             .child(resizable_panel().child(player))
-            .child(resizable_panel().size(px(480.)).size_range(px(300.)..px(1000.)).child(details))
+            .child(
+                resizable_panel()
+                    .size(px(480.))
+                    .size_range(px(300.)..px(1000.))
+                    .child(details),
+            )
             .into_any_element()
     }
 
@@ -847,7 +944,15 @@ impl TestudoApp {
                                     .child(format!("{:>7.3}s", s.rel)),
                             )
                             .child(div().w(px(60.)).flex_none().child(pill(s.kind, theme.muted_foreground)))
-                            .child(div().flex_1().min_w_0().truncate().text_sm().text_color(text).child(s.title.clone()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_sm()
+                                    .text_color(text)
+                                    .child(s.title.clone()),
+                            )
                             .child(
                                 div()
                                     .w(px(58.))
@@ -960,7 +1065,11 @@ impl TestudoApp {
                             .text_xs()
                             .text_color(color)
                             .border_l_2()
-                            .border_color(if current == Some(i) { theme.blue } else { theme.transparent })
+                            .border_color(if current == Some(i) {
+                                theme.blue
+                            } else {
+                                theme.transparent
+                            })
                             .when(current == Some(i), |d| d.bg(theme.list_active))
                             .cursor_pointer()
                             .hover(|d| d.bg(theme.list_hover))
@@ -991,7 +1100,12 @@ impl TestudoApp {
                     .py_1()
                     .items_center()
                     .child(div().flex_1().min_w_0().child(chips))
-                    .child(div().w(px(170.)).flex_none().child(Input::new(&self.net_search).xsmall())),
+                    .child(
+                        div()
+                            .w(px(170.))
+                            .flex_none()
+                            .child(Input::new(&self.net_search).xsmall()),
+                    ),
             )
             .child(header)
             .child(list)
@@ -1061,7 +1175,14 @@ impl TestudoApp {
                                         .child(format!("{:>7.3}s", c.rel)),
                                 )
                                 .child(div().w(px(64.)).flex_none().child(pill(c.level.clone(), base)))
-                                .child(div().flex_1().min_w_0().truncate().text_color(base).child(c.text.clone()))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_color(base)
+                                        .child(c.text.clone()),
+                                )
                                 .tooltip(tooltip_text(c.text.clone()))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.with_focus(w, |f, page, _, _| f.seek(at, page));
@@ -1121,7 +1242,9 @@ impl TestudoApp {
         let Some(view) = self.view(w) else { return };
         let Some(focus) = view.focus.as_ref() else { return };
         let model: &Model = focus.recorded.as_deref().unwrap_or(&view.model);
-        let Some(page) = model.pages.get(&focus.key) else { return };
+        let Some(page) = model.pages.get(&focus.key) else {
+            return;
+        };
         let (start, end) = focus.bounds(page);
         let at = start + fx * (end - start);
         let slop = 4.0 * px_ms(end - start);

@@ -9,14 +9,16 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
-use gpui_kit::component::button::{Button, ButtonRounded, ButtonVariants};
 use gpui_kit::component::Icon;
+use gpui_kit::component::WindowExt;
+use gpui_kit::component::button::{Button, ButtonRounded, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::WindowExt;
-use gpui_kit::component::{ActiveTheme, Disableable, Selectable, Sizable, h_flex, h_resizable, resizable_panel, v_flex, v_resizable};
+use gpui_kit::component::{
+    ActiveTheme, Disableable, Selectable, Sizable, h_flex, h_resizable, resizable_panel, v_flex, v_resizable,
+};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use testudo_core::discover::{Suite, discover};
@@ -26,10 +28,10 @@ use testudo_protocol::Event;
 use testudo_store::{RunRow, Store};
 
 use crate::bridge::UiMsg;
-use crate::logic::{rerun_args, tilde, test_order, 
-    REPEAT_THRESHOLD, RowState, Tone, expand_tilde, fmt_ago, fmt_dur, fmt_secs, fmt_time, status_label, summary_line,
-    url_path, looks_like_failure, ordered_pages, pane_name,
-    row_state, status_icon, truncate,
+use crate::logic::{
+    REPEAT_THRESHOLD, RowState, Tone, expand_tilde, fmt_ago, fmt_dur, fmt_secs, fmt_time, looks_like_failure,
+    ordered_pages, pane_name, rerun_args, row_state, status_icon, status_label, summary_line, test_order, tilde,
+    truncate, url_path,
 };
 use crate::model::{Model, Page, PageKey, Source};
 use crate::state::{InspectorTab, PageFocus, PagesView, Replay, Retired, StreamFilter};
@@ -252,8 +254,14 @@ impl TestudoApp {
                 && let Some(replay) = app.replay.as_mut()
             {
                 let v = &mut replay.view;
-                let failing: Vec<String> =
-                    v.model.runs.iter().flat_map(|r| &r.tests).filter(|t| t.error.is_some()).map(|t| t.id.clone()).collect();
+                let failing: Vec<String> = v
+                    .model
+                    .runs
+                    .iter()
+                    .flat_map(|r| &r.tests)
+                    .filter(|t| t.error.is_some())
+                    .map(|t| t.id.clone())
+                    .collect();
                 v.expanded_tests.extend(failing);
             }
             if let (Some(page), Some(replay)) = (s.focus_page.as_deref(), app.replay.as_mut()) {
@@ -278,19 +286,26 @@ impl TestudoApp {
                     && let (Some(store), Some(f)) = (app.store.clone(), replay.view.focus.as_mut())
                     && let Some(test) = f.recorded.as_ref().and_then(|m| {
                         let page = m.pages.get(&f.key)?;
-                        m.test_for_page(page).and_then(|t| Some((t.file.clone()?, t.title_path.clone())))
+                        m.test_for_page(page)
+                            .and_then(|t| Some((t.file.clone()?, t.title_path.clone())))
                     })
                 {
                     f.open_compare(&test.0, &test.1, &store);
                     f.compare_by_step = std::env::var("TESTUDO_DEBUG_COMPARE").as_deref() != Ok("time");
-                    let more: isize = std::env::var("TESTUDO_DEBUG_COMPARE_COUNT").ok().and_then(|n| n.parse::<isize>().ok()).map_or(0, |n| n - 1);
+                    let more: isize = std::env::var("TESTUDO_DEBUG_COMPARE_COUNT")
+                        .ok()
+                        .and_then(|n| n.parse::<isize>().ok())
+                        .map_or(0, |n| n - 1);
                     if more > 0 {
                         for _ in 0..more {
                             let old = f.resize_compare(1, &store);
                             app.retired.extend(old);
                         }
                     }
-                    let back: isize = std::env::var("TESTUDO_DEBUG_COMPARE_STEP").ok().and_then(|n| n.parse().ok()).unwrap_or(0);
+                    let back: isize = std::env::var("TESTUDO_DEBUG_COMPARE_STEP")
+                        .ok()
+                        .and_then(|n| n.parse().ok())
+                        .unwrap_or(0);
                     if back != 0 {
                         let old = f.step_compare(back, &store);
                         app.retired.extend(old);
@@ -335,7 +350,11 @@ impl TestudoApp {
             UiMsg::Frame { key, .. } => key.run_id.as_str(),
         };
         if self.dropped_runs.contains(run) {
-            if let UiMsg::Event { event: Event::ProcessExited { .. }, .. } = &msg {
+            if let UiMsg::Event {
+                event: Event::ProcessExited { .. },
+                ..
+            } = &msg
+            {
                 self.dropped_runs.remove(run);
                 self.refresh_history();
             }
@@ -372,7 +391,10 @@ impl TestudoApp {
                 self.live.apply(&run_id, at, event);
                 if let Some(page_id) = follow {
                     self.follow_run = None;
-                    self.open_live_focus(PageKey { run_id: run_id.clone(), page_id });
+                    self.open_live_focus(PageKey {
+                        run_id: run_id.clone(),
+                        page_id,
+                    });
                 }
                 // Test hook (debug builds only): focus the first page that opens.
                 #[cfg(debug_assertions)]
@@ -409,7 +431,12 @@ impl TestudoApp {
             self.error = Some(format!("{} is not a directory", dir.display()));
             return;
         }
-        let same = |a: &PathBuf, b: &PathBuf| a.canonicalize().ok().zip(b.canonicalize().ok()).is_some_and(|(a, b)| a == b);
+        let same = |a: &PathBuf, b: &PathBuf| {
+            a.canonicalize()
+                .ok()
+                .zip(b.canonicalize().ok())
+                .is_some_and(|(a, b)| a == b)
+        };
         if self.scanned.as_ref().is_some_and(|old| !same(old, &dir)) {
             self.leave_project();
         }
@@ -428,7 +455,8 @@ impl TestudoApp {
             self.dropped_runs.insert(id);
         }
         // Finished runs may still have stragglers (late adapter messages).
-        self.dropped_runs.extend(self.live.model.runs.iter().map(|r| r.id.clone()));
+        self.dropped_runs
+            .extend(self.live.model.runs.iter().map(|r| r.id.clone()));
         let images = self.live.clear();
         self.retired.extend(images);
     }
@@ -457,7 +485,9 @@ impl TestudoApp {
             .split_whitespace()
             .map(str::to_owned)
             .collect();
-        let Some(spec) = RunSpec::for_suite(suite, args) else { return };
+        let Some(spec) = RunSpec::for_suite(suite, args) else {
+            return;
+        };
         match self.orchestrator.start(spec) {
             Ok(handle) => {
                 self.live.selected_run = Some(handle.id.clone());
@@ -486,7 +516,10 @@ impl TestudoApp {
         let mut args = rerun_args(&run.runner, &run.cwd, file, line, test.project.as_deref())
             .ok_or_else(|| format!("re-running single tests isn't supported for {}", run.runner))?;
         let same_dir = |a: &std::path::Path| {
-            a.canonicalize().ok().zip(std::path::Path::new(&run.cwd).canonicalize().ok()).is_some_and(|(a, b)| a == b)
+            a.canonicalize()
+                .ok()
+                .zip(std::path::Path::new(&run.cwd).canonicalize().ok())
+                .is_some_and(|(a, b)| a == b)
         };
         let matches = |s: &Suite| s.kind.runner().is_some_and(|k| k.name() == run.runner) && same_dir(&s.dir);
         let suite = self
@@ -494,10 +527,19 @@ impl TestudoApp {
             .iter()
             .find(|s| matches(s))
             .cloned()
-            .or_else(|| discover(std::path::Path::new(&run.cwd)).into_iter().find(|s| matches(s)))
+            .or_else(|| {
+                discover(std::path::Path::new(&run.cwd))
+                    .into_iter()
+                    .find(|s| matches(s))
+            })
             .ok_or_else(|| format!("no {} suite found in {}", run.runner, run.cwd))?;
-        let mut user: Vec<String> =
-            self.args_input.read(cx).value().split_whitespace().map(str::to_owned).collect();
+        let mut user: Vec<String> = self
+            .args_input
+            .read(cx)
+            .value()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
         user.append(&mut args);
         Ok((suite, user))
     }
@@ -514,7 +556,9 @@ impl TestudoApp {
                 return;
             }
         };
-        let Some(spec) = RunSpec::for_suite(&suite, args) else { return };
+        let Some(spec) = RunSpec::for_suite(&suite, args) else {
+            return;
+        };
         match self.orchestrator.start(spec) {
             Ok(handle) => {
                 self.follow_run = Some(handle.id.clone());
@@ -628,7 +672,13 @@ impl TestudoApp {
         w: Which,
         f: impl FnOnce(&mut PageFocus, &Page, Option<&Store>, &mut Retired) -> R,
     ) -> Option<R> {
-        let Self { live, replay, retired, store, .. } = self;
+        let Self {
+            live,
+            replay,
+            retired,
+            store,
+            ..
+        } = self;
         let view = match w {
             Which::Live => live,
             Which::Replay => &mut replay.as_mut()?.view,
@@ -648,7 +698,9 @@ impl TestudoApp {
     /// The focused page's test steps, (start, title), while comparing.
     fn compare_steps(&self, w: Which) -> Vec<(f64, String)> {
         let Some(view) = self.view(w) else { return Vec::new() };
-        let Some(focus) = view.focus.as_ref().filter(|f| f.compare.is_some()) else { return Vec::new() };
+        let Some(focus) = view.focus.as_ref().filter(|f| f.compare.is_some()) else {
+            return Vec::new();
+        };
         let model = focus.recorded.as_deref().unwrap_or(&view.model);
         model
             .pages
@@ -687,7 +739,9 @@ impl TestudoApp {
     /// to that project 8s after start, as if typed in and scanned.
     #[cfg(debug_assertions)]
     fn debug_switch_dir(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(dir) = std::env::var_os("TESTUDO_DEBUG_SWITCH_DIR") else { return };
+        let Some(dir) = std::env::var_os("TESTUDO_DEBUG_SWITCH_DIR") else {
+            return;
+        };
         if self.started_at.elapsed() < Duration::from_secs(8) {
             window.request_animation_frame();
             return;
@@ -701,7 +755,11 @@ impl TestudoApp {
 
     /// What is on screen, for slow-frame reports.
     fn frame_ctx(&self) -> crate::perf::FrameCtx {
-        let w = if self.mode == Mode::History { Which::Replay } else { Which::Live };
+        let w = if self.mode == Mode::History {
+            Which::Replay
+        } else {
+            Which::Live
+        };
         let view = self.view(w);
         crate::perf::FrameCtx {
             history: w == Which::Replay,
@@ -744,7 +802,11 @@ impl TestudoApp {
                 let running = running_live && page.closed_at.is_none() && f.recorded.is_none();
                 let a = f.tick(page, running, dt_ms);
                 if f.playing {
-                    playing = Some(if f.compare.is_some() { "focus_playback_compare" } else { "focus_playback" });
+                    playing = Some(if f.compare.is_some() {
+                        "focus_playback_compare"
+                    } else {
+                        "focus_playback"
+                    });
                 }
                 let decoding = f.update_image(page, store, retired);
                 let decoding_compare = f.update_compare(page, &steps, retired);
@@ -837,28 +899,39 @@ fn pill(text: impl Into<SharedString>, color: Hsla) -> Div {
 /// first line of the runner's reason; the full text is in the tooltip.
 fn skip_card(note: String, theme: &gpui_kit::component::Theme) -> Div {
     let reason = summary_line(&note);
-    div().absolute().inset_0().flex().items_center().justify_center().p_3().child(
-        v_flex()
-            .w_full()
-            .max_w(px(360.))
-            .gap_1()
-            .px_3()
-            .py_2()
-            .rounded_md()
-            .overflow_hidden()
-            .bg(theme.background.opacity(0.92))
-            .border_1()
-            .border_color(theme.border)
-            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Test skipped"))
-            .child(
-                div()
-                    .w_full()
-                    .truncate()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child(if reason.is_empty() { "skipped before the page was used".to_owned() } else { reason }),
-            ),
-    )
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .p_3()
+        .child(
+            v_flex()
+                .w_full()
+                .max_w(px(360.))
+                .gap_1()
+                .px_3()
+                .py_2()
+                .rounded_md()
+                .overflow_hidden()
+                .bg(theme.background.opacity(0.92))
+                .border_1()
+                .border_color(theme.border)
+                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Test skipped"))
+                .child(
+                    div()
+                        .w_full()
+                        .truncate()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(if reason.is_empty() {
+                            "skipped before the page was used".to_owned()
+                        } else {
+                            reason
+                        }),
+                ),
+        )
 }
 
 /// Playback speed picker: the current speed, opening a menu of `SPEEDS`.
@@ -884,12 +957,16 @@ fn speed_menu(
             menu = menu.label("Playback speed");
             for s in crate::state::SPEEDS {
                 let (app, set) = (app.clone(), set.clone());
-                menu = menu.item(PopupMenuItem::new(speed_label(s)).checked(s == current).on_click(move |_, _, cx| {
-                    let _ = app.update(cx, |this, cx| {
-                        set(this, s);
-                        cx.notify();
-                    });
-                }));
+                menu = menu.item(
+                    PopupMenuItem::new(speed_label(s))
+                        .checked(s == current)
+                        .on_click(move |_, _, cx| {
+                            let _ = app.update(cx, |this, cx| {
+                                set(this, s);
+                                cx.notify();
+                            });
+                        }),
+                );
             }
             menu
         })
@@ -932,7 +1009,11 @@ const TILE_LABEL_H: f32 = 46.;
 /// the container (absolute, 100% × 100%), the box is the container and
 /// `Contain` fits the picture inside it.
 fn frame_img(image: Arc<RenderImage>) -> Img {
-    img(image).object_fit(ObjectFit::Contain).absolute().inset_0().size_full()
+    img(image)
+        .object_fit(ObjectFit::Contain)
+        .absolute()
+        .inset_0()
+        .size_full()
 }
 
 /// A Lucide icon bundled with gpui-kit's assets.
@@ -997,14 +1078,11 @@ impl Render for TestudoApp {
             .on_action(cx.listener(Self::on_toggle_play))
             .on_action(cx.listener(Self::on_close_focus))
             .child(self.render_top_bar(window, cx))
-            .children(self.error.clone().map(|e| {
-                div()
-                    .px_3()
-                    .py_1()
-                    .text_sm()
-                    .text_color(cx.theme().red)
-                    .child(e)
-            }))
+            .children(
+                self.error
+                    .clone()
+                    .map(|e| div().px_3().py_1().text_sm().text_color(cx.theme().red).child(e)),
+            )
             .child(div().flex_1().min_h_0().child(body))
     }
 }
@@ -1055,7 +1133,8 @@ impl TestudoApp {
                 button("pick-folder")
                     .label(if self.picking { "…" } else { "📂" })
                     .small()
-                    .disabled(self.picking).when(self.picking, |b| b.cursor_default())
+                    .disabled(self.picking)
+                    .when(self.picking, |b| b.cursor_default())
                     .tooltip("Choose a project directory")
                     .on_click(cx.listener(|this, _, window, cx| this.pick_folder(window, cx))),
             )
@@ -1102,7 +1181,9 @@ impl TestudoApp {
         let app = cx.entity().downgrade();
         let store = self.store.clone();
         let panel = cx.new(|_| settings::SettingsPanel::new(app, store));
-        window.open_dialog(cx, move |dialog, _, _| dialog.title("Settings").w(px(600.)).child(panel.clone()));
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog.title("Settings").w(px(600.)).child(panel.clone())
+        });
     }
 
     /// Recordings were deleted from the settings dialog: refresh History and
@@ -1137,38 +1218,54 @@ impl TestudoApp {
             .child(div().h(px(1.)).bg(cx.theme().border).my_1())
             .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child("Runs"))
             .when(self.live.model.runs.is_empty(), |d| {
-                d.child(div().text_sm().text_color(cx.theme().muted_foreground).child("No runs yet. Press ▶ on a suite."))
+                d.child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("No runs yet. Press ▶ on a suite."),
+                )
             })
             .child(self.run_list(Which::Live, cx));
 
         h_resizable("live-main")
-            .child(resizable_panel().size(px(330.)).size_range(px(220.)..px(700.)).child(sidebar))
             .child(
-                resizable_panel().child(if self.live.focus.is_some() {
-                    // The focus view brings its own details panel.
-                    self.render_focus(Which::Live, window, cx).into_any_element()
-                } else {
-                    v_resizable("live-center")
-                        .child(resizable_panel().child(self.render_pages(Which::Live, window, cx)))
-                        .child(
-                            resizable_panel()
-                                .size(px(240.))
-                                .size_range(px(90.)..px(700.))
-                                .child(self.render_inspector(Which::Live, window, cx)),
-                        )
-                        .into_any_element()
-                }),
+                resizable_panel()
+                    .size(px(330.))
+                    .size_range(px(220.)..px(700.))
+                    .child(sidebar),
             )
+            .child(resizable_panel().child(if self.live.focus.is_some() {
+                // The focus view brings its own details panel.
+                self.render_focus(Which::Live, window, cx).into_any_element()
+            } else {
+                v_resizable("live-center")
+                    .child(resizable_panel().child(self.render_pages(Which::Live, window, cx)))
+                    .child(
+                        resizable_panel()
+                            .size(px(240.))
+                            .size_range(px(90.)..px(700.))
+                            .child(self.render_inspector(Which::Live, window, cx)),
+                    )
+                    .into_any_element()
+            }))
     }
 
     fn render_suites(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let runnable = self.suites.iter().filter(|s| s.runnable()).count();
         let muted = cx.theme().muted_foreground;
-        let mut col = v_flex()
-            .gap_1()
-            .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child(format!("Suites ({runnable})")));
+        let mut col = v_flex().gap_1().child(
+            div()
+                .text_base()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(format!("Suites ({runnable})")),
+        );
         if self.scanned.is_some() && self.suites.is_empty() {
-            col = col.child(div().text_sm().text_color(muted).child("No Playwright or Vitest suites found here."));
+            col = col.child(
+                div()
+                    .text_sm()
+                    .text_color(muted)
+                    .child("No Playwright or Vitest suites found here."),
+            );
         }
         for (i, s) in self.suites.iter().enumerate() {
             let suite = s.clone();
@@ -1183,7 +1280,8 @@ impl TestudoApp {
                         button(("run-suite", i))
                             .label("▶")
                             .xsmall()
-                            .disabled(!s.runnable()).when(!s.runnable(), |b| b.cursor_default())
+                            .disabled(!s.runnable())
+                            .when(!s.runnable(), |b| b.cursor_default())
                             .on_click(cx.listener(move |this, _, _, cx| this.start_suite(&suite, cx))),
                     )
                     .child(
@@ -1195,8 +1293,15 @@ impl TestudoApp {
                             .when(!s.runnable(), |d| d.text_color(muted))
                             .child(s.name.clone()),
                     )
-                    .children(s.tool.as_ref().and_then(|t| t.version.clone()).map(|v| div().text_xs().text_color(muted).child(v)))
-                    .when(!s.warnings.is_empty(), |d| d.child(div().text_color(cx.theme().yellow).child("⚠")))
+                    .children(
+                        s.tool
+                            .as_ref()
+                            .and_then(|t| t.version.clone())
+                            .map(|v| div().text_xs().text_color(muted).child(v)),
+                    )
+                    .when(!s.warnings.is_empty(), |d| {
+                        d.child(div().text_color(cx.theme().yellow).child("⚠"))
+                    })
                     .tooltip(tooltip_text(hover.join("\n"))),
             );
         }
@@ -1220,7 +1325,9 @@ impl TestudoApp {
     /// fixed-height rows and virtualized, so only visible rows are built and
     /// laid out (a 600-test Vitest run otherwise costs ~200 ms per frame).
     fn run_list(&mut self, w: Which, cx: &mut Context<Self>) -> AnyElement {
-        let Some(view) = self.view(w) else { return div().into_any_element() };
+        let Some(view) = self.view(w) else {
+            return div().into_any_element();
+        };
         let rows = Rc::new(run_rows(view));
         let list = uniform_list(
             ("runs", w as usize),
@@ -1260,7 +1367,13 @@ impl TestudoApp {
             .rev()
             .flat_map(|r| r.tests.iter())
             .filter(|t| view.expanded_tests.contains(&t.id))
-            .filter_map(|t| Some((t.id.clone(), t.title.clone(), truncate(t.error.as_deref()?, MAX_ERROR_CHARS))))
+            .filter_map(|t| {
+                Some((
+                    t.id.clone(),
+                    t.title.clone(),
+                    truncate(t.error.as_deref()?, MAX_ERROR_CHARS),
+                ))
+            })
             .collect();
         if open.is_empty() {
             return None;
@@ -1284,7 +1397,15 @@ impl TestudoApp {
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .child(div().flex_1().min_w_0().truncate().text_sm().font_weight(FontWeight::SEMIBOLD).child(title))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(title),
+                            )
                             .child(
                                 button(("close-error", i))
                                     .label("✕")
@@ -1316,8 +1437,12 @@ impl TestudoApp {
             ListRow::Gap => None,
         };
         let selected = run_index.is_some_and(|ri| {
-            self.view(w)
-                .is_some_and(|v| v.model.runs.get(ri).is_some_and(|r| v.selected_run.as_deref() == Some(&r.id)))
+            self.view(w).is_some_and(|v| {
+                v.model
+                    .runs
+                    .get(ri)
+                    .is_some_and(|r| v.selected_run.as_deref() == Some(&r.id))
+            })
         });
         let accent = cx.theme().blue;
         let content = self.run_row_content(w, row, cx);
@@ -1325,7 +1450,11 @@ impl TestudoApp {
             .w_full()
             .border_l_2()
             .pl_1()
-            .border_color(if selected { accent } else { gpui_kit::transparent_black() })
+            .border_color(if selected {
+                accent
+            } else {
+                gpui_kit::transparent_black()
+            })
             .child(content)
             .into_any_element()
     }
@@ -1333,12 +1462,18 @@ impl TestudoApp {
     fn run_row_content(&mut self, w: Which, row: &ListRow, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
-        let Some(view) = self.view(w) else { return div().into_any_element() };
+        let Some(view) = self.view(w) else {
+            return div().into_any_element();
+        };
         let line = || div().w_full().h(px(RUN_ROW_H)).flex().items_center().overflow_hidden();
         match *row {
-            ListRow::Gap => line().child(div().w_full().h(px(1.)).bg(theme.border)).into_any_element(),
+            ListRow::Gap => line()
+                .child(div().w_full().h(px(1.)).bg(theme.border))
+                .into_any_element(),
             ListRow::Header(ri) => {
-                let Some(run) = view.model.runs.get(ri) else { return line().into_any_element() };
+                let Some(run) = view.model.runs.get(ri) else {
+                    return line().into_any_element();
+                };
                 let (status, tn) = match (&run.exit, run.run_end.as_deref()) {
                     (None, _) => ("Running".to_owned(), Tone::Running),
                     (Some(_), Some("passed")) | (Some(Some(0)), _) => ("Passed".to_owned(), Tone::Passed),
@@ -1419,7 +1554,9 @@ impl TestudoApp {
                 header.into_any_element()
             }
             ListRow::Counts(ri) => {
-                let Some(run) = view.model.runs.get(ri) else { return line().into_any_element() };
+                let Some(run) = view.model.runs.get(ri) else {
+                    return line().into_any_element();
+                };
                 let (passed, failed, running, pending) = run.counts();
                 let total = run.total_tests.map(|t| format!(" of {t}")).unwrap_or_default();
                 line()
@@ -1428,15 +1565,28 @@ impl TestudoApp {
                     .when(failed > 0, |d| d.child(pill(format!("✘ {failed}"), theme.red)))
                     .when(running > 0, |d| d.child(pill(format!("⏳ {running}"), theme.blue)))
                     .when(pending > 0, |d| d.child(pill(format!("○ {pending}"), muted)))
-                    .child(div().text_xs().text_color(muted).child(format!("{}{total} tests", run.tests.len())))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(format!("{}{total} tests", run.tests.len())),
+                    )
                     .into_any_element()
             }
             ListRow::Test(ri, ti) => {
-                let Some(run) = view.model.runs.get(ri) else { return line().into_any_element() };
-                let Some(t) = run.tests.get(ti) else { return line().into_any_element() };
+                let Some(run) = view.model.runs.get(ri) else {
+                    return line().into_any_element();
+                };
+                let Some(t) = run.tests.get(ti) else {
+                    return line().into_any_element();
+                };
                 // Duration bars are relative to the slowest test in the run.
                 let slowest = run.tests.iter().filter_map(|t| t.duration_ms).fold(1.0_f64, f64::max);
-                let (icon, tn) = if t.queued { ("○", Tone::Muted) } else { status_icon(t.status) };
+                let (icon, tn) = if t.queued {
+                    ("○", Tone::Muted)
+                } else {
+                    status_icon(t.status)
+                };
                 let bar = t.duration_ms.map(|d| (d / slowest).clamp(0.02, 1.0) as f32);
                 let bar_color = if matches!(tn, Tone::Failed) { theme.red } else { muted };
                 let store = self.store.clone();
@@ -1457,8 +1607,17 @@ impl TestudoApp {
                     .px_1()
                     .rounded_sm()
                     .hover(|d| d.bg(theme.list_hover))
-                    .when(failing, |d| d.cursor_pointer().on_click(cx.listener(toggle_error(w, test_id))))
-                    .child(div().w(px(14.)).flex_none().text_xs().text_color(tone(tn, cx)).child(icon))
+                    .when(failing, |d| {
+                        d.cursor_pointer().on_click(cx.listener(toggle_error(w, test_id)))
+                    })
+                    .child(
+                        div()
+                            .w(px(14.))
+                            .flex_none()
+                            .text_xs()
+                            .text_color(tone(tn, cx))
+                            .child(icon),
+                    )
                     .child(div().flex_1().min_w_0().truncate().text_sm().child(t.title.clone()))
                     .child(
                         div()
@@ -1467,7 +1626,9 @@ impl TestudoApp {
                             .flex_none()
                             .rounded_full()
                             .bg(theme.secondary)
-                            .children(bar.map(|f| div().h_full().w(px(40. * f)).rounded_full().bg(bar_color.opacity(0.8)))),
+                            .children(
+                                bar.map(|f| div().h_full().w(px(40. * f)).rounded_full().bg(bar_color.opacity(0.8))),
+                            ),
                     )
                     .child(
                         div()
@@ -1512,11 +1673,21 @@ impl TestudoApp {
                 };
                 let (text, color) = match kind {
                     NoteKind::Step => (format!("↳ {}", t.current_step.as_deref().unwrap_or_default()), muted),
-                    NoteKind::Skip => (format!("skipped: {}", summary_line(t.note.as_deref().unwrap_or_default())), muted),
+                    NoteKind::Skip => (
+                        format!("skipped: {}", summary_line(t.note.as_deref().unwrap_or_default())),
+                        muted,
+                    ),
                     // Failing tests show their error's first line; click for all.
                     NoteKind::Error => {
-                        let open = if view.expanded_tests.contains(&t.id) { "▾" } else { "▸" };
-                        (format!("{open} {}", summary_line(t.error.as_deref().unwrap_or_default())), theme.red)
+                        let open = if view.expanded_tests.contains(&t.id) {
+                            "▾"
+                        } else {
+                            "▸"
+                        };
+                        (
+                            format!("{open} {}", summary_line(t.error.as_deref().unwrap_or_default())),
+                            theme.red,
+                        )
                     }
                 };
                 let test_id = t.id.clone();
@@ -1525,7 +1696,9 @@ impl TestudoApp {
                     .pl(px(26.))
                     .text_xs()
                     .text_color(color)
-                    .when(kind == NoteKind::Error, |d| d.cursor_pointer().on_click(cx.listener(toggle_error(w, test_id))))
+                    .when(kind == NoteKind::Error, |d| {
+                        d.cursor_pointer().on_click(cx.listener(toggle_error(w, test_id)))
+                    })
                     .child(div().min_w_0().truncate().child(text))
                     .into_any_element()
             }
@@ -1535,7 +1708,9 @@ impl TestudoApp {
     // --- pages ----------------------------------------------------------------
 
     fn render_pages(&mut self, w: Which, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let Some(view) = self.view(w) else { return div().into_any_element() };
+        let Some(view) = self.view(w) else {
+            return div().into_any_element();
+        };
         let muted = cx.theme().muted_foreground;
         let pages = ordered_pages(&view.model);
         if pages.is_empty() {
@@ -1602,17 +1777,17 @@ impl TestudoApp {
                             .when(closed, |d| d.opacity(0.7))
                             .when(skipped.is_some(), |d| d.opacity(0.15))
                             .child(match frame {
-                            Some(f) => frame_img(f).into_any_element(),
-                            None => div()
-                                .size_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_sm()
-                                .text_color(muted)
-                                .child("waiting for frames…")
-                                .into_any_element(),
-                        }),
+                                Some(f) => frame_img(f).into_any_element(),
+                                None => div()
+                                    .size_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_sm()
+                                    .text_color(muted)
+                                    .child("waiting for frames…")
+                                    .into_any_element(),
+                            }),
                     )
                     .when_some(skipped.clone(), |d, note| d.child(skip_card(note, &theme)))
                     .child(
@@ -1622,7 +1797,9 @@ impl TestudoApp {
                             .left_2()
                             .gap_1()
                             .child(pill(label, color).bg(theme.background.opacity(0.85)))
-                            .when(live, |d| d.child(pill("● LIVE", theme.red).bg(theme.background.opacity(0.85)))),
+                            .when(live, |d| {
+                                d.child(pill("● LIVE", theme.red).bg(theme.background.opacity(0.85)))
+                            }),
                     )
                     .child(
                         v_flex()
@@ -1634,14 +1811,29 @@ impl TestudoApp {
                             .justify_center()
                             .px_2()
                             .bg(theme.background.opacity(0.82))
-                            .child(div().truncate().text_sm().font_weight(FontWeight::SEMIBOLD).child(title.clone()))
-                            .child(div().truncate().text_xs().text_color(muted).child(url_path(&page.url).to_owned())),
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(title.clone()),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(url_path(&page.url).to_owned()),
+                            ),
                     )
                     .tooltip(tooltip_text(match &skipped {
                         Some(note) if !note.is_empty() => {
                             format!("{title}\nskipped: {}\nclick to open", summary_line(note))
                         }
-                        _ => format!("{title}\n{}\nclick to open: watch live, or scrub the recording", page.url),
+                        _ => format!(
+                            "{title}\n{}\nclick to open: watch live, or scrub the recording",
+                            page.url
+                        ),
                     }))
                     .on_click(cx.listener(move |this, _, window, cx| this.open_focus(w, key.clone(), window, cx))),
             );
@@ -1673,7 +1865,13 @@ impl TestudoApp {
         };
         let selected_page = view.selected_page.clone();
 
-        let mut tabs = h_flex().gap_1().px_2().py_1().border_t_1().border_b_1().border_color(cx.theme().border);
+        let mut tabs = h_flex()
+            .gap_1()
+            .px_2()
+            .py_1()
+            .border_t_1()
+            .border_b_1()
+            .border_color(cx.theme().border);
         for (t, name) in [
             (InspectorTab::Network, "Network"),
             (InspectorTab::Console, "Console"),
@@ -1701,7 +1899,11 @@ impl TestudoApp {
             if let Some(page) = selected_page.clone() {
                 let has = store.frame_path(&page.run_id, &page.page_id).exists();
                 tabs = tabs.child(if !has {
-                    div().text_xs().text_color(muted).child("(no recording)").into_any_element()
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .child("(no recording)")
+                        .into_any_element()
                 } else if exporter.busy() {
                     div().text_xs().text_color(muted).child("exporting…").into_any_element()
                 } else {
@@ -1740,7 +1942,10 @@ impl TestudoApp {
             InspectorTab::Network => self.render_network(w, cx).into_any_element(),
             InspectorTab::Console => self.render_console(w, cx).into_any_element(),
         };
-        v_flex().size_full().child(tabs).child(div().flex_1().min_h_0().px_2().child(body))
+        v_flex()
+            .size_full()
+            .child(tabs)
+            .child(div().flex_1().min_h_0().px_2().child(body))
     }
 
     /// Runner output as a log table: time, source, severity bar, message.
@@ -1757,8 +1962,12 @@ impl TestudoApp {
         for l in run.output.iter().filter(|l| l.source == Source::Stderr) {
             *repeats.entry(l.text.as_str()).or_default() += 1;
         }
-        let (hide, stream, follow, seen) =
-            (view.hide_repeated_stderr, view.output_stream, view.output_follow, view.output_seen);
+        let (hide, stream, follow, seen) = (
+            view.hide_repeated_stderr,
+            view.output_stream,
+            view.output_follow,
+            view.output_seen,
+        );
         let filter = self.filter_input.read(cx).value().to_lowercase();
         let started = run.started_at;
         let rows: Rc<Vec<(f64, Source, bool, SharedString)>> = Rc::new(
@@ -1775,14 +1984,28 @@ impl TestudoApp {
                         && repeats.get(l.text.as_str()).is_some_and(|n| *n > REPEAT_THRESHOLD))
                 })
                 .filter(|l| filter.is_empty() || l.text.to_lowercase().contains(&filter))
-                .map(|l| ((l.at - started) / 1000.0, l.source, looks_like_failure(&l.text), SharedString::from(l.text.clone())))
+                .map(|l| {
+                    (
+                        (l.at - started) / 1000.0,
+                        l.source,
+                        looks_like_failure(&l.text),
+                        SharedString::from(l.text.clone()),
+                    )
+                })
                 .collect(),
         );
-        let mut folded: Vec<(&str, usize)> =
-            repeats.iter().filter(|(_, n)| **n > REPEAT_THRESHOLD).map(|(l, n)| (*l, *n)).collect();
+        let mut folded: Vec<(&str, usize)> = repeats
+            .iter()
+            .filter(|(_, n)| **n > REPEAT_THRESHOLD)
+            .map(|(l, n)| (*l, *n))
+            .collect();
         folded.sort_by_key(|f| std::cmp::Reverse(f.1));
         let folded_total: usize = folded.iter().map(|(_, n)| n).sum();
-        let folded_detail = folded.iter().map(|(l, n)| format!("{n} × {l}")).collect::<Vec<_>>().join("\n");
+        let folded_detail = folded
+            .iter()
+            .map(|(l, n)| format!("{n} × {l}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let count = rows.len();
 
         // Follow the tail; a manual scroll away from the bottom turns it off.
@@ -1800,7 +2023,11 @@ impl TestudoApp {
         }
 
         let mut chips = h_flex().gap_1();
-        for (f, name) in [(StreamFilter::All, "All"), (StreamFilter::Stdout, "stdout"), (StreamFilter::Stderr, "stderr")] {
+        for (f, name) in [
+            (StreamFilter::All, "All"),
+            (StreamFilter::Stdout, "stdout"),
+            (StreamFilter::Stderr, "stderr"),
+        ] {
             chips = chips.child(
                 button(SharedString::from(format!("os-{name}-{}", w as usize)))
                     .label(name)
@@ -1937,9 +2164,23 @@ impl TestudoApp {
                         (None, Some(e)) => format!("ERR {e}"),
                         (None, None) => "…".into(),
                     };
-                    let ms = r.finished.map(|f| format!("{:.0}ms", f - r.started)).unwrap_or_default();
-                    let c = if r.error.is_some() || r.status.is_some_and(|s| s >= 400) { red } else { text };
-                    let line = format!("{:<6} {:>5} {:>7} {:<10} {}", r.method, status, ms, r.resource_type, truncate(&r.url, 200));
+                    let ms = r
+                        .finished
+                        .map(|f| format!("{:.0}ms", f - r.started))
+                        .unwrap_or_default();
+                    let c = if r.error.is_some() || r.status.is_some_and(|s| s >= 400) {
+                        red
+                    } else {
+                        text
+                    };
+                    let line = format!(
+                        "{:<6} {:>5} {:>7} {:<10} {}",
+                        r.method,
+                        status,
+                        ms,
+                        r.resource_type,
+                        truncate(&r.url, 200)
+                    );
                     (c, SharedString::from(line))
                 })
                 .collect(),
@@ -2023,7 +2264,14 @@ impl TestudoApp {
                             .items_center()
                             .child(pill(status, tone(tn, cx)))
                             .child(div().flex_1().min_w_0().truncate().text_sm().child(r.label.clone()))
-                            .child(div().flex_none().text_xs().font_family(crate::fonts::mono()).text_color(muted).child(duration)),
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_xs()
+                                    .font_family(crate::fonts::mono())
+                                    .text_color(muted)
+                                    .child(duration),
+                            ),
                     )
                     .child(
                         h_flex()
@@ -2031,7 +2279,9 @@ impl TestudoApp {
                             .text_xs()
                             .text_color(muted)
                             .child(format!("✔ {}", r.passed))
-                            .when(r.failed > 0, |d| d.child(div().text_color(theme.red).child(format!("✘ {}", r.failed))))
+                            .when(r.failed > 0, |d| {
+                                d.child(div().text_color(theme.red).child(format!("✘ {}", r.failed)))
+                            })
                             .when(r.skipped > 0, |d| d.child(format!("⊘ {}", r.skipped)))
                             .child(div().flex_1())
                             .child(format!("{} · {}", fmt_ago(r.started_at, now), fmt_time(r.started_at))),
@@ -2051,14 +2301,22 @@ impl TestudoApp {
                 h_flex()
                     .gap_2()
                     .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child("History"))
-                    .child(button("hist-refresh").label("⟳").xsmall().tooltip("Refresh").on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.refresh_history();
-                            cx.notify();
-                        },
-                    ))),
+                    .child(
+                        button("hist-refresh")
+                            .label("⟳")
+                            .xsmall()
+                            .tooltip("Refresh")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.refresh_history();
+                                cx.notify();
+                            })),
+                    ),
             )
-            .children(self.store.as_ref().map(|s| div().text_xs().text_color(muted).truncate().child(tilde(s.dir()))))
+            .children(
+                self.store
+                    .as_ref()
+                    .map(|s| div().text_xs().text_color(muted).truncate().child(tilde(s.dir()))),
+            )
             .child(self.render_history_summary(cx))
             .child(
                 div()
@@ -2081,7 +2339,12 @@ impl TestudoApp {
             v_flex()
                 .size_full()
                 .child(self.render_timeline(cx))
-                .child(div().flex_1().min_h_0().child(self.render_pages(Which::Replay, window, cx)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .child(self.render_pages(Which::Replay, window, cx)),
+                )
                 .into_any_element()
         } else {
             div()
@@ -2100,17 +2363,25 @@ impl TestudoApp {
         };
 
         h_resizable("history-main")
-            .child(resizable_panel().size(px(360.)).size_range(px(220.)..px(700.)).child(sidebar))
             .child(
-                resizable_panel().child(if replay_focus {
-                    center
-                } else {
-                    v_resizable("history-center")
-                        .child(resizable_panel().child(center))
-                        .child(resizable_panel().size(px(240.)).size_range(px(90.)..px(700.)).child(inspector))
-                        .into_any_element()
-                }),
+                resizable_panel()
+                    .size(px(360.))
+                    .size_range(px(220.)..px(700.))
+                    .child(sidebar),
             )
+            .child(resizable_panel().child(if replay_focus {
+                center
+            } else {
+                v_resizable("history-center")
+                    .child(resizable_panel().child(center))
+                    .child(
+                        resizable_panel()
+                            .size(px(240.))
+                            .size_range(px(90.)..px(700.))
+                            .child(inspector),
+                    )
+                    .into_any_element()
+            }))
             .into_any_element()
     }
 
@@ -2118,8 +2389,12 @@ impl TestudoApp {
     fn render_history_summary(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
-        let recent: Vec<&RunRow> =
-            self.history.iter().filter(|r| r.status != "running").take(SUMMARY_RUNS).collect();
+        let recent: Vec<&RunRow> = self
+            .history
+            .iter()
+            .filter(|r| r.status != "running")
+            .take(SUMMARY_RUNS)
+            .collect();
         let passed = recent.iter().filter(|r| r.status == "passed").count();
         let rate = (!recent.is_empty()).then(|| passed as f64 / recent.len() as f64 * 100.0);
         let rate_color = match rate {
@@ -2188,7 +2463,14 @@ impl TestudoApp {
             .child(
                 card("sum-flaky")
                     .child(caption("Flaky tests"))
-                    .child(big(self.flaky.len().to_string(), if self.flaky.is_empty() { theme.foreground } else { theme.yellow }))
+                    .child(big(
+                        self.flaky.len().to_string(),
+                        if self.flaky.is_empty() {
+                            theme.foreground
+                        } else {
+                            theme.yellow
+                        },
+                    ))
                     .child(caption(&format!("last {SUMMARY_RUNS} runs")))
                     .tooltip(tooltip_text(flaky_detail)),
             )
@@ -2214,12 +2496,16 @@ impl TestudoApp {
                         .w_full()
                         .h(px(26.)),
                     )
-                    .tooltip(tooltip_text(format!("duration of the last {spark_n} runs, oldest → newest; colour = result"))),
+                    .tooltip(tooltip_text(format!(
+                        "duration of the last {spark_n} runs, oldest → newest; colour = result"
+                    ))),
             )
     }
 
     fn render_timeline(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(replay) = self.replay.as_ref() else { return v_flex() };
+        let Some(replay) = self.replay.as_ref() else {
+            return v_flex();
+        };
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
         let span = (replay.end - replay.start).max(1.0);
@@ -2248,16 +2534,29 @@ impl TestudoApp {
             Tone::Muted => 3,
             Tone::Warn => 4,
         };
-        let spans: Vec<(usize, f32, f32, Hsla)> =
-            spans.into_iter().map(|(l, a, b, t)| (l, a, b, colors[&tone_key(t)].opacity(0.65))).collect();
+        let spans: Vec<(usize, f32, f32, Hsla)> = spans
+            .into_iter()
+            .map(|(l, a, b, t)| (l, a, b, colors[&tone_key(t)].opacity(0.65)))
+            .collect();
         let cursor = frac(replay.t);
         let cell = self.timeline_scrub.clone();
         let (playing, speed, keep) = (replay.playing, replay.speed, replay.view.keep_closed_pages);
-        let time = format!("{} / {}", fmt_secs(replay.t - replay.start), fmt_secs(replay.end - replay.start));
+        let time = format!(
+            "{} / {}",
+            fmt_secs(replay.t - replay.start),
+            fmt_secs(replay.end - replay.start)
+        );
         let hovered = self
             .timeline_hover
             .and_then(|i| replay.spans.get(i))
-            .map(|s| format!("{} {}  ({})", status_icon(s.status).0, s.title, fmt_secs(s.end - s.start)))
+            .map(|s| {
+                format!(
+                    "{} {}  ({})",
+                    status_icon(s.status).0,
+                    s.title,
+                    fmt_secs(s.end - s.start)
+                )
+            })
             .unwrap_or_default();
 
         v_flex()
@@ -2266,33 +2565,38 @@ impl TestudoApp {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(button("tl-start").icon(media_icon("skip-back")).small().ghost().tooltip("Start").on_click(cx.listener(
-                        |this, _, _, cx| {
-                            if let (Some(r), Some(store)) = (this.replay.as_mut(), this.store.clone()) {
-                                let s = r.start;
-                                r.seek(s, &store, &mut this.retired);
-                            }
-                            cx.notify();
-                        },
-                    )))
-                    .child(button("tl-play")
-                        .icon(media_icon(if playing { "pause" } else { "play" }))
-                        .small()
-                        .primary()
-                        .rounded(ButtonRounded::Large)
-                        .tooltip("Play / pause")
-                        .on_click(cx.listener(
-                        |this, _, _, cx| {
-                            if let (Some(r), Some(store)) = (this.replay.as_mut(), this.store.clone()) {
-                                if !r.playing && r.t >= r.end {
+                    .child(
+                        button("tl-start")
+                            .icon(media_icon("skip-back"))
+                            .small()
+                            .ghost()
+                            .tooltip("Start")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let (Some(r), Some(store)) = (this.replay.as_mut(), this.store.clone()) {
                                     let s = r.start;
                                     r.seek(s, &store, &mut this.retired);
                                 }
-                                r.playing = !r.playing;
-                            }
-                            cx.notify();
-                        },
-                    )))
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        button("tl-play")
+                            .icon(media_icon(if playing { "pause" } else { "play" }))
+                            .small()
+                            .primary()
+                            .rounded(ButtonRounded::Large)
+                            .tooltip("Play / pause")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let (Some(r), Some(store)) = (this.replay.as_mut(), this.store.clone()) {
+                                    if !r.playing && r.t >= r.end {
+                                        let s = r.start;
+                                        r.seek(s, &store, &mut this.retired);
+                                    }
+                                    r.playing = !r.playing;
+                                }
+                                cx.notify();
+                            })),
+                    )
                     .child(speed_menu("tl-speed", speed, cx, |this, s| {
                         if let Some(r) = this.replay.as_mut() {
                             r.speed = s;
@@ -2301,7 +2605,7 @@ impl TestudoApp {
                     .child(div().font_family(crate::fonts::mono()).text_sm().child(time))
                     .child(
                         Checkbox::new("tl-keep")
-                                .cursor_pointer()
+                            .cursor_pointer()
                             .label("Keep closed pages")
                             .checked(keep)
                             .on_click(cx.listener(|this, checked: &bool, _, cx| {
@@ -2330,14 +2634,26 @@ impl TestudoApp {
                                     let top = y0 + px(14.0 + lane_h * *lane as f32);
                                     let left = x0 + wd * *a;
                                     let width = (wd * (*b - *a)).max(px(2.));
-                                    window.paint_quad(fill(Bounds::new(point(left, top + px(1.)), size(width, px((lane_h - 1.0).max(1.0)))), *c));
+                                    window.paint_quad(fill(
+                                        Bounds::new(
+                                            point(left, top + px(1.)),
+                                            size(width, px((lane_h - 1.0).max(1.0))),
+                                        ),
+                                        *c,
+                                    ));
                                 }
-                                window.paint_quad(fill(Bounds::new(point(x0 + wd * cursor - px(1.), y0), size(px(2.), bounds.size.height)), theme.foreground));
+                                window.paint_quad(fill(
+                                    Bounds::new(point(x0 + wd * cursor - px(1.), y0), size(px(2.), bounds.size.height)),
+                                    theme.foreground,
+                                ));
                             },
                         )
                         .size_full(),
                     )
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, e: &MouseDownEvent, _, cx| this.scrub_timeline(e.position.x, cx)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, e: &MouseDownEvent, _, cx| this.scrub_timeline(e.position.x, cx)),
+                    )
                     .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
                         if e.pressed_button == Some(MouseButton::Left) {
                             this.scrub_timeline(e.position.x, cx);
@@ -2359,7 +2675,11 @@ impl TestudoApp {
         let t = r.start + fx as f64 * (r.end - r.start);
         let lane = (fy / lane_h).floor();
         let hit = (fy >= 0.0)
-            .then(|| r.spans.iter().position(|s| s.lane as f32 == lane && s.start <= t && t <= s.end))
+            .then(|| {
+                r.spans
+                    .iter()
+                    .position(|s| s.lane as f32 == lane && s.start <= t && t <= s.end)
+            })
             .flatten();
         if hit != self.timeline_hover {
             self.timeline_hover = hit;
@@ -2434,7 +2754,10 @@ fn run_rows(view: &PagesView) -> Vec<ListRow> {
 }
 
 /// Click handler: expand or collapse a failing test's error.
-fn toggle_error(w: Which, test_id: String) -> impl Fn(&mut TestudoApp, &ClickEvent, &mut Window, &mut Context<TestudoApp>) {
+fn toggle_error(
+    w: Which,
+    test_id: String,
+) -> impl Fn(&mut TestudoApp, &ClickEvent, &mut Window, &mut Context<TestudoApp>) {
     move |this, _, _, cx| {
         if let Some(v) = this.view_mut(w)
             && !v.expanded_tests.remove(&test_id)
@@ -2444,4 +2767,3 @@ fn toggle_error(w: Which, test_id: String) -> impl Fn(&mut TestudoApp, &ClickEve
         cx.notify();
     }
 }
-

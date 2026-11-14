@@ -164,7 +164,12 @@ fn otlp(base: &str) -> anyhow::Result<(SdkTracerProvider, Option<SdkLoggerProvid
             .with_endpoint(format!("{base}/v1/logs"))
             .with_headers(headers)
             .build()?;
-        Some(SdkLoggerProvider::builder().with_batch_exporter(logs).with_resource(resource).build())
+        Some(
+            SdkLoggerProvider::builder()
+                .with_batch_exporter(logs)
+                .with_resource(resource)
+                .build(),
+        )
     } else {
         None
     };

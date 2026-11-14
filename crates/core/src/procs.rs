@@ -66,7 +66,9 @@ pub fn alive(p: &Proc) -> bool {
 /// Every process on the system with its parent pid.
 #[cfg(target_os = "linux")]
 fn all_procs() -> Vec<(Proc, i32)> {
-    let Ok(entries) = std::fs::read_dir("/proc") else { return vec![] };
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return vec![];
+    };
     entries
         .flatten()
         .filter_map(|e| e.file_name().to_str()?.parse::<i32>().ok())
@@ -111,14 +113,16 @@ fn stat(pid: i32) -> Option<(Proc, i32)> {
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
     // SAFETY: `info` is a properly sized, writable proc_bsdinfo.
-    let got = unsafe {
-        libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size)
-    };
+    let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
     if got != size {
         return None;
     }
     let start_time = info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec;
-    let proc = Proc { pid, pgid: info.pbi_pgid as i32, start_time };
+    let proc = Proc {
+        pid,
+        pgid: info.pbi_pgid as i32,
+        start_time,
+    };
     Some((proc, info.pbi_ppid as i32))
 }
 
@@ -173,7 +177,10 @@ mod tests {
 
         let root = child.id() as i32;
         let snap = descendants(root);
-        let detached = snap.iter().find(|p| p.pgid != root).expect("detached grandchild in snapshot");
+        let detached = snap
+            .iter()
+            .find(|p| p.pgid != root)
+            .expect("detached grandchild in snapshot");
         assert!(alive(detached));
 
         signal_group(root, Sig::Kill);

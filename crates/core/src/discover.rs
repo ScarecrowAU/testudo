@@ -115,7 +115,8 @@ pub fn discover(root: &Path) -> Vec<Suite> {
     for f in &files {
         let name = file_name(f);
         let is_workspace = name.starts_with("vitest.workspace.")
-            || (is_config(&name, "vitest") && read(f).is_some_and(|t| t.contains("projects:") || t.contains("workspace:")));
+            || (is_config(&name, "vitest")
+                && read(f).is_some_and(|t| t.contains("projects:") || t.contains("workspace:")));
         if is_workspace {
             vitest_workspaces.push(f.parent().unwrap().to_owned());
         }
@@ -147,7 +148,10 @@ pub fn discover(root: &Path) -> Vec<Suite> {
                 .trim_matches(|c| c == '.' || c == '-' || c == '_')
                 .to_owned();
             let variant = if variant == "workspace" { String::new() } else { variant };
-            if suites.iter().any(|s: &Suite| s.kind == SuiteKind::Vitest && s.dir == dir) {
+            if suites
+                .iter()
+                .any(|s: &Suite| s.kind == SuiteKind::Vitest && s.dir == dir)
+            {
                 continue; // vitest.config + vitest.workspace in one dir: one suite
             }
             suites.push(node_suite(&root, f, &dir, SuiteKind::Vitest, &variant));
@@ -236,7 +240,8 @@ fn resolve_pkg(from: &Path, name: &str) -> Option<PathBuf> {
 
 pub fn package_version(from: &Path, name: &str) -> Option<String> {
     let dir = resolve_pkg(from, name)?;
-    let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("package.json")).ok()?).ok()?;
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("package.json")).ok()?).ok()?;
     json.get("version")?.as_str().map(str::to_owned)
 }
 
@@ -264,9 +269,9 @@ fn missing_chromium(dir: &Path) -> Option<String> {
         .filter(|p| p != "0")
         .map(PathBuf::from)
         .or_else(default_browsers_path)?;
-    let installed = ["chromium", "chromium-headless-shell"].iter().any(|name| {
-        revision(name).is_some_and(|rev| cache.join(format!("{}-{rev}", name.replace('-', "_"))).exists())
-    });
+    let installed = ["chromium", "chromium-headless-shell"]
+        .iter()
+        .any(|name| revision(name).is_some_and(|rev| cache.join(format!("{}-{rev}", name.replace('-', "_"))).exists()));
     if installed {
         return None;
     }
@@ -293,9 +298,13 @@ fn default_browsers_path() -> Option<PathBuf> {
 }
 
 fn is_config(file_name: &str, tool: &str) -> bool {
-    let Some(rest) = file_name.strip_prefix(tool) else { return false };
+    let Some(rest) = file_name.strip_prefix(tool) else {
+        return false;
+    };
     // `playwright.config.ts`, `playwright.storybook.config.ts`, `playwright-ct.config.ts`
-    let Some((_, ext)) = rest.rsplit_once(".config.") else { return false };
+    let Some((_, ext)) = rest.rsplit_once(".config.") else {
+        return false;
+    };
     (rest.starts_with(".config.") || rest.starts_with('.') || rest.starts_with('-') || rest.starts_with('_'))
         && CONFIG_EXTS.contains(&ext)
 }
@@ -327,7 +336,9 @@ fn read(p: &Path) -> Option<String> {
 }
 
 fn file_name(p: &Path) -> String {
-    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    p.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 fn rel(root: &Path, p: &Path) -> String {
@@ -338,9 +349,9 @@ fn rel(root: &Path, p: &Path) -> String {
 /// after its folder ("acme-shop", not ".").
 fn rel_dir(root: &Path, dir: &Path) -> String {
     match dir.strip_prefix(root) {
-        Ok(r) if r.as_os_str().is_empty() => {
-            root.file_name().map_or_else(|| ".".to_owned(), |n| n.to_string_lossy().into_owned())
-        }
+        Ok(r) if r.as_os_str().is_empty() => root
+            .file_name()
+            .map_or_else(|| ".".to_owned(), |n| n.to_string_lossy().into_owned()),
         Ok(r) => r.display().to_string(),
         Err(_) => dir.display().to_string(),
     }
@@ -375,22 +386,40 @@ mod tests {
         fake_pkg(&root, "apps/shop", "@playwright/test", "1.60.0", "playwright");
         touch(&root, "apps/admin/playwright.config.ts", "");
         fake_pkg(&root, "apps/admin", "@playwright/test", "1.64.1", "playwright");
-        touch(&root, "apps/admin/vite.config.ts", "export default { test: { environment: 'jsdom' } }");
+        touch(
+            &root,
+            "apps/admin/vite.config.ts",
+            "export default { test: { environment: 'jsdom' } }",
+        );
         fake_pkg(&root, "apps/admin", "vitest", "4.1.0", "vitest");
         touch(&root, "apps/docs/playwright.config.ts", ""); // not installed
         touch(&root, "apps/shop/node_modules/foo/playwright.config.ts", ""); // ignored
         touch(&root, "packages/ui/vite.config.ts", "export default {}"); // no test block
 
         let suites = discover(&root);
-        let by_id = |id: &str| suites.iter().find(|s| s.id == id).unwrap_or_else(|| panic!("missing {id}"));
+        let by_id = |id: &str| {
+            suites
+                .iter()
+                .find(|s| s.id == id)
+                .unwrap_or_else(|| panic!("missing {id}"))
+        };
         let names: Vec<&str> = suites.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(suites.len(), 6, "{names:?}");
 
         let shop = by_id("apps/shop/playwright.config.ts");
         assert_eq!(shop.tool.as_ref().unwrap().version.as_deref(), Some("1.60.0"));
-        assert!(by_id("apps/shop/playwright.storybook.config.ts").name.ends_with("Playwright (storybook)"));
+        assert!(
+            by_id("apps/shop/playwright.storybook.config.ts")
+                .name
+                .ends_with("Playwright (storybook)")
+        );
         assert_eq!(
-            by_id("apps/admin/playwright.config.ts").tool.as_ref().unwrap().version.as_deref(),
+            by_id("apps/admin/playwright.config.ts")
+                .tool
+                .as_ref()
+                .unwrap()
+                .version
+                .as_deref(),
             Some("1.64.1")
         );
         let vite = by_id("apps/admin/vite.config.ts");
@@ -416,7 +445,9 @@ mod tests {
 
     #[test]
     fn suite_at_the_root_is_named_after_the_folder() {
-        let root = std::env::temp_dir().join(format!("testudo-rootname-{}", std::process::id())).join("acme-shop");
+        let root = std::env::temp_dir()
+            .join(format!("testudo-rootname-{}", std::process::id()))
+            .join("acme-shop");
         let _ = std::fs::remove_dir_all(&root);
         touch(&root, "playwright.config.ts", "export default {}");
         let suites = discover(&root);

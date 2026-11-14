@@ -46,7 +46,11 @@ fn main() {
     log("watching crates/ (Rust) and adapters/js/ (no restart needed); close the window or Ctrl+C to quit");
     let mut sources = scan(&root, is_source);
     let mut adapters = scan(&root.join("adapters/js"), |p| ext(p, "mjs"));
-    let mut app = if build_latest(&root, &mut sources) { start(&bin, &app_args, &log_file) } else { None };
+    let mut app = if build_latest(&root, &mut sources) {
+        start(&bin, &app_args, &log_file)
+    } else {
+        None
+    };
 
     loop {
         std::thread::sleep(POLL);
@@ -65,7 +69,10 @@ fn main() {
         let now = scan(&root.join("adapters/js"), |p| ext(p, "mjs"));
         if now != adapters {
             for p in changed(&adapters, &now) {
-                log(&format!("adapter changed: {} (used from the next run, no restart)", rel(&root, &p)));
+                log(&format!(
+                    "adapter changed: {} (used from the next run, no restart)",
+                    rel(&root, &p)
+                ));
             }
             adapters = now;
         }
@@ -79,7 +86,12 @@ fn main() {
         sources = settled;
         log(&format!(
             "changed: {}",
-            files.iter().take(5).map(|p| rel(&root, p)).collect::<Vec<_>>().join(", ")
+            files
+                .iter()
+                .take(5)
+                .map(|p| rel(&root, p))
+                .collect::<Vec<_>>()
+                .join(", ")
                 + if files.len() > 5 { " …" } else { "" }
         ));
 
@@ -131,7 +143,11 @@ fn build_latest(root: &Path, sources: &mut Snapshot) -> bool {
                 let settled = settle(root, now);
                 log(&format!(
                     "more changes during build ({}); restarting build",
-                    changed(sources, &settled).iter().map(|p| rel(root, p)).collect::<Vec<_>>().join(", ")
+                    changed(sources, &settled)
+                        .iter()
+                        .map(|p| rel(root, p))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ));
                 *sources = settled;
                 continue 'attempt;
@@ -168,7 +184,9 @@ fn start(bin: &Path, args: &[String], log_file: &Path) -> Option<Child> {
 /// `TESTUDO_*` lines from `dev/.env`. The OTLP settings are dropped when the
 /// endpoint doesn't answer.
 fn dev_env(path: &Path) -> Vec<(String, String)> {
-    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
     let mut vars: Vec<(String, String)> = text
         .lines()
         .map(str::trim)
@@ -177,7 +195,10 @@ fn dev_env(path: &Path) -> Vec<(String, String)> {
         .map(|(k, v)| (k.trim().to_owned(), v.trim().trim_matches('"').to_owned()))
         .filter(|(k, _)| k.starts_with("TESTUDO_"))
         .collect();
-    let endpoint = vars.iter().find(|(k, _)| k == "TESTUDO_OTLP_ENDPOINT").map(|(_, v)| v.clone());
+    let endpoint = vars
+        .iter()
+        .find(|(k, _)| k == "TESTUDO_OTLP_ENDPOINT")
+        .map(|(_, v)| v.clone());
     if let Some(url) = endpoint
         && !reachable(&url)
     {
@@ -192,7 +213,11 @@ fn reachable(url: &str) -> bool {
     use std::net::ToSocketAddrs;
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     let host = rest.split('/').next().unwrap_or(rest);
-    let host = if host.contains(':') { host.to_owned() } else { format!("{host}:{}", if url.starts_with("https") { 443 } else { 80 }) };
+    let host = if host.contains(':') {
+        host.to_owned()
+    } else {
+        format!("{host}:{}", if url.starts_with("https") { 443 } else { 80 })
+    };
     host.to_socket_addrs()
         .ok()
         .and_then(|mut a| a.next())
