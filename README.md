@@ -38,7 +38,6 @@ The preload hooks `playwright-core` through its client instrumentation (`runAfte
 | `crates/core` | Orchestrator (spawn, process-group cancel), ingest socket, hub. |
 | `crates/store` | Run history (SQLite) and frame recordings; `Recorder` hub subscriber; retention; MP4 export. |
 | `crates/ui` | `testudo` GUI on gpui (via gpui-kit). Live view, focus view, History with timeline replay. |
-| `crates/app` | Previous egui GUI, built as `testudo-egui`; kept until the gpui UI is confirmed, then removed. |
 | `crates/cli` | `testudo-cli`: headless runs (recorded), history, show, export, prune. |
 | `adapters/js` | Zero-dependency Node adapters shipped with Testudo. |
 | `examples/` | Playwright and Vitest-browser demo projects for smoke testing. |

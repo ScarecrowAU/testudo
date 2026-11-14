@@ -188,7 +188,7 @@ fn settle(root: &Path, mut snap: Snapshot) -> Snapshot {
 
 fn is_source(p: &Path) -> bool {
     let s = p.to_string_lossy();
-    let in_crates = s.contains("/crates/") && !s.contains("/crates/dev/") && !s.contains("/crates/app/");
+    let in_crates = s.contains("/crates/") && !s.contains("/crates/dev/");
     (in_crates && (ext(p, "rs") || p.file_name().is_some_and(|n| n == "Cargo.toml")))
         || (!s.contains("/crates/") && p.file_name().is_some_and(|n| n == "Cargo.toml" || n == "Cargo.lock"))
 }
