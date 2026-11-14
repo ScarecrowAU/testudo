@@ -611,7 +611,9 @@ impl TestudoApp {
                 let mut rows = Vec::new();
                 let mut it = cells.into_iter();
                 while let Some(a) = it.next() {
-                    let mut row = h_flex().flex_1().min_h_0().gap_2().child(a);
+                    // Stretch: cells get their height from the row, not their content (frames
+                    // are pinned to their cell and add no height of their own).
+                    let mut row = h_flex().items_stretch().flex_1().min_h_0().gap_2().child(a);
                     row = match it.next() {
                         Some(b) => row.child(b),
                         None if rows.is_empty() => row,
