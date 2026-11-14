@@ -98,11 +98,12 @@ Stop (button), closing the window, Ctrl+C, SIGTERM and SIGHUP all stop runs the 
 
 ## Watching and scrubbing a page
 
-Click any page pane to open it large:
+Click any page pane to open it in a replay-player layout:
 
+- **Player**: test title with status and browser pills and `file:line`; a browser-style URL bar showing the URL at the scrub time (with copy); the frame; a timeline with step bars, request ticks, navigations (green) and console errors (red), hover to name what is under the pointer; controls beneath.
 - **Running page**: follows the browser live (● LIVE). Scroll back to drop into what has been recorded so far; ● LIVE returns. If the page closes while you watch, it becomes a recording.
-- **Finished page, or any page in History**: scrub the recording. Wheel = scrub, Shift+wheel or ←/→ = one frame, Space = play/pause, Esc = back to the grid. The scrub bar marks requests (ticks), navigations (blue) and console errors (red).
-- **Network and Console tabs sync to the scrub time**: every row for the page is listed, rows that have not started yet are faded, in-flight requests are blue, and clicking a row jumps there.
+- **Finished page, or any page in History**: wheel = scrub, Shift+wheel or ←/→ = one frame, Space = play/pause, Esc = back to the grid.
+- **Details panel, synced to the scrub time**: *Steps* (every Playwright action, expect and `test.step` with timing; the current one highlighted), *Network* (table with type/error filter chips, URL search), *Console* (level filter) and *Output*. Rows not reached yet are faded, in-flight requests are blue, and clicking any row jumps there.
 
 `testudo --replay <run-id> --at <secs> --focus <page-id>` opens straight into a page (page ids are listed by `testudo-cli show <run-id>`).
 

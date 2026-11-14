@@ -72,6 +72,18 @@ pub struct Test {
     pub duration_ms: Option<f64>,
     pub error: Option<String>,
     pub current_step: Option<String>,
+    /// Every reported step (Playwright actions, expects, test.step), in start
+    /// order, stamped with hub receive time like everything else.
+    pub steps: Vec<StepRow>,
+}
+
+pub struct StepRow {
+    pub id: String,
+    pub title: String,
+    pub category: Option<String>,
+    pub started: f64,
+    pub ended: Option<f64>,
+    pub error: Option<String>,
 }
 
 pub struct Page {
@@ -240,7 +252,7 @@ impl Model {
                     push_capped(&mut p.console, ConsoleRow { at, level, text }, MAX_ROWS);
                 }
             }
-            other => apply_run_event(self.ensure_run(run_id), other),
+            other => apply_run_event(self.ensure_run(run_id), at, other),
         }
         Effect::None
     }
@@ -264,7 +276,7 @@ impl Model {
 
 }
 
-fn apply_run_event(run: &mut Run, event: Event) {
+fn apply_run_event(run: &mut Run, at: f64, event: Event) {
     match event {
         Event::RunBegin { total_tests } => run.total_tests = total_tests,
         Event::TestBegin {
@@ -280,6 +292,8 @@ fn apply_run_event(run: &mut Run, event: Event) {
                 t.status = None;
                 t.error = None;
                 t.duration_ms = None;
+                t.steps.clear();
+                t.current_step = None;
             } else {
                 run.tests.push(Test {
                     id: test_id,
@@ -291,12 +305,42 @@ fn apply_run_event(run: &mut Run, event: Event) {
                     duration_ms: None,
                     error: None,
                     current_step: None,
+                    steps: Vec::new(),
                 });
             }
         }
-        Event::StepBegin { test_id, title, .. } => {
+        Event::StepBegin {
+            test_id,
+            step_id,
+            title,
+            category,
+        } => {
             if let Some(t) = run.test_mut(&test_id) {
-                t.current_step = Some(title);
+                t.current_step = Some(title.clone());
+                push_capped(
+                    &mut t.steps,
+                    StepRow {
+                        id: step_id,
+                        title,
+                        category,
+                        started: at,
+                        ended: None,
+                        error: None,
+                    },
+                    MAX_ROWS,
+                );
+            }
+        }
+        Event::StepEnd {
+            test_id, step_id, error, ..
+        } => {
+            if let Some(t) = run.test_mut(&test_id) {
+                if let Some(s) = t.steps.iter_mut().rev().find(|s| s.id == step_id) {
+                    s.ended = Some(at);
+                    s.error = error;
+                }
+                // The innermost step still running, if any.
+                t.current_step = t.steps.iter().rev().find(|s| s.ended.is_none()).map(|s| s.title.clone());
             }
         }
         Event::TestEnd {
@@ -319,7 +363,7 @@ fn apply_run_event(run: &mut Run, event: Event) {
         }
         Event::RunStarted { label, .. } => run.label = label,
         Event::ProcessExited { code } => run.exit = Some(code),
-        Event::Hello { .. } | Event::StepEnd { .. } => {}
+        Event::Hello { .. } => {}
         // Page-scoped events are handled by the caller.
         _ => {}
     }

@@ -106,6 +106,78 @@ impl PagesView {
 
 // --- page focus ---------------------------------------------------------------
 
+/// Tabs of the focus view's details panel.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FocusTab {
+    Steps,
+    Network,
+    Console,
+    Output,
+}
+
+/// Network table filter chips.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NetFilter {
+    All,
+    Document,
+    Fetch,
+    Script,
+    Style,
+    Image,
+    Other,
+    Errors,
+}
+
+impl NetFilter {
+    pub const ALL: [NetFilter; 8] = [
+        NetFilter::All,
+        NetFilter::Document,
+        NetFilter::Fetch,
+        NetFilter::Script,
+        NetFilter::Style,
+        NetFilter::Image,
+        NetFilter::Other,
+        NetFilter::Errors,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            NetFilter::All => "All",
+            NetFilter::Document => "Doc",
+            NetFilter::Fetch => "Fetch/XHR",
+            NetFilter::Script => "JS",
+            NetFilter::Style => "CSS",
+            NetFilter::Image => "Img",
+            NetFilter::Other => "Other",
+            NetFilter::Errors => "Errors",
+        }
+    }
+
+    pub fn matches(self, resource_type: &str, failed: bool) -> bool {
+        match self {
+            NetFilter::All => true,
+            NetFilter::Errors => failed,
+            NetFilter::Document => resource_type == "document",
+            NetFilter::Fetch => matches!(resource_type, "fetch" | "xhr"),
+            NetFilter::Script => resource_type == "script",
+            NetFilter::Style => resource_type == "stylesheet",
+            NetFilter::Image => matches!(resource_type, "image" | "media" | "font"),
+            NetFilter::Other => !matches!(
+                resource_type,
+                "document" | "fetch" | "xhr" | "script" | "stylesheet" | "image" | "media" | "font"
+            ),
+        }
+    }
+}
+
+/// Console filter chips.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ConsoleFilter {
+    All,
+    Errors,
+    Warnings,
+}
+
 const SPEEDS: [f32; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
 /// While a page is still recording, re-read its frame index at most this often.
 const REINDEX_EVERY_MS: u128 = 400;
@@ -128,6 +200,11 @@ pub struct PageFocus {
     /// Scroll the synced lists to the scrub time on the next draw.
     pub sync_lists: bool,
     pub wheel_px: f32,
+    pub tab: FocusTab,
+    pub net_filter: NetFilter,
+    pub console_filter: ConsoleFilter,
+    /// What the mouse is over on the timeline (step / request / navigation).
+    pub hover_label: Option<String>,
 }
 
 impl PageFocus {
@@ -154,6 +231,10 @@ impl PageFocus {
             image: None,
             sync_lists: true,
             wheel_px: 0.0,
+            tab: FocusTab::Steps,
+            net_filter: NetFilter::All,
+            console_filter: ConsoleFilter::All,
+            hover_label: None,
         }
     }
 

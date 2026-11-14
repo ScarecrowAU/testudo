@@ -28,6 +28,8 @@ use crate::logic::{
 use crate::model::{Model, Page, PageKey};
 use crate::state::{InspectorTab, PageFocus, PagesView, Replay, Retired};
 
+mod focus;
+
 const HISTORY_LIMIT: usize = 200;
 /// One wheel notch (~50px) moves this fraction of the page's duration.
 const WHEEL_FRACTION_PER_NOTCH: f64 = 0.02;
@@ -87,6 +89,7 @@ pub struct TestudoApp {
     project_input: Entity<InputState>,
     args_input: Entity<InputState>,
     filter_input: Entity<InputState>,
+    net_search: Entity<InputState>,
     suites: Vec<Suite>,
     scanned: Option<PathBuf>,
     picking: bool,
@@ -101,6 +104,7 @@ pub struct TestudoApp {
     timeline_hover: Option<usize>,
     net_scroll: UniformListScrollHandle,
     console_scroll: UniformListScrollHandle,
+    steps_scroll: UniformListScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -118,6 +122,7 @@ impl TestudoApp {
                 .default_value(s.runner_args.join(" "))
         });
         let filter_input = cx.new(|cx| InputState::new(window, cx).placeholder("filter output"));
+        let net_search = cx.new(|cx| InputState::new(window, cx).placeholder("search URLs"));
         let subscriptions = vec![
             cx.subscribe_in(&project_input, window, |this, _, ev: &InputEvent, _, cx| {
                 if matches!(ev, InputEvent::PressEnter { .. }) {
@@ -126,6 +131,11 @@ impl TestudoApp {
                 }
             }),
             cx.subscribe_in(&filter_input, window, |_, _, ev: &InputEvent, _, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
+            cx.subscribe_in(&net_search, window, |_, _, ev: &InputEvent, _, cx| {
                 if matches!(ev, InputEvent::Change) {
                     cx.notify();
                 }
@@ -169,6 +179,7 @@ impl TestudoApp {
             project_input,
             args_input,
             filter_input,
+            net_search,
             suites: Vec::new(),
             scanned: None,
             picking: false,
@@ -180,6 +191,7 @@ impl TestudoApp {
             timeline_hover: None,
             net_scroll: UniformListScrollHandle::new(),
             console_scroll: UniformListScrollHandle::new(),
+            steps_scroll: UniformListScrollHandle::new(),
             _subscriptions: subscriptions,
         };
         let _ = s.rt.take();
@@ -199,6 +211,17 @@ impl TestudoApp {
                     run_id: replay.run.id.clone(),
                     page_id: page.to_owned(),
                 });
+                // Test hook (debug builds only): open the focus on a given tab.
+                #[cfg(debug_assertions)]
+                if let (Ok(tab), Some(f)) = (std::env::var("TESTUDO_DEBUG_FOCUS_TAB"), replay.view.focus.as_mut()) {
+                    use crate::state::FocusTab;
+                    f.tab = match tab.as_str() {
+                        "network" => FocusTab::Network,
+                        "console" => FocusTab::Console,
+                        "output" => FocusTab::Output,
+                        _ => FocusTab::Steps,
+                    };
+                }
                 window.focus(&app.focus_handle, cx);
             }
         }
@@ -659,7 +682,10 @@ impl TestudoApp {
         h_resizable("live-main")
             .child(resizable_panel().size(px(330.)).size_range(px(220.)..px(700.)).child(sidebar))
             .child(
-                resizable_panel().child(
+                resizable_panel().child(if self.live.focus.is_some() {
+                    // The focus view brings its own details panel.
+                    self.render_focus(Which::Live, window, cx).into_any_element()
+                } else {
                     v_resizable("live-center")
                         .child(resizable_panel().child(self.render_pages(Which::Live, window, cx)))
                         .child(
@@ -667,8 +693,9 @@ impl TestudoApp {
                                 .size(px(240.))
                                 .size_range(px(90.)..px(700.))
                                 .child(self.render_inspector(Which::Live, window, cx)),
-                        ),
-                ),
+                        )
+                        .into_any_element()
+                }),
             )
     }
 
@@ -856,10 +883,7 @@ impl TestudoApp {
 
     // --- pages ----------------------------------------------------------------
 
-    fn render_pages(&mut self, w: Which, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        if self.view(w).is_some_and(|v| v.focus.is_some()) {
-            return self.render_focus(w, window, cx).into_any_element();
-        }
+    fn render_pages(&mut self, w: Which, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(view) = self.view(w) else { return div().into_any_element() };
         let muted = cx.theme().muted_foreground;
         let pages = ordered_pages(&view.model);
@@ -927,260 +951,6 @@ impl TestudoApp {
             );
         }
         grid.into_any_element()
-    }
-
-    // --- focus ----------------------------------------------------------------
-
-    fn render_focus(&mut self, w: Which, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
-        let Some(view) = self.view(w) else { return v_flex() };
-        let Some(focus) = view.focus.as_ref() else { return v_flex() };
-        let model: &Model = focus.recorded.as_deref().unwrap_or(&view.model);
-        let Some(page) = model.pages.get(&focus.key) else {
-            return v_flex().child("page no longer available");
-        };
-        let running = w == Which::Live && page.closed_at.is_none() && focus.recorded.is_none();
-        let test = model.test_for_page(page);
-        let (_, tn) = status_icon(test.and_then(|t| t.status));
-        let (start, end) = focus.bounds(page);
-        let t = focus.t.min(end);
-        let url = page
-            .navigations
-            .iter()
-            .rev()
-            .find(|(at, _)| *at <= t)
-            .map_or(page.url.clone(), |(_, u)| u.clone());
-        let frame_label = (!focus.follow_live)
-            .then(|| focus.frame_position())
-            .flatten()
-            .map(|(i, n)| format!("frame {}/{n}", i + 1));
-        let image = if focus.follow_live || !focus.has_recording() {
-            page.frame.clone()
-        } else {
-            focus.image.clone()
-        };
-        let no_recording = !focus.follow_live && !focus.has_recording() && !running;
-
-        // Scrub-bar markers as fractions of the page timeline.
-        let span = (end - start).max(1.0);
-        let frac = |x: f64| ((x - start) / span).clamp(0.0, 1.0) as f32;
-        let ticks: Vec<(f32, bool)> = page
-            .network
-            .iter()
-            .map(|r| (frac(r.started), r.error.is_some() || r.status.is_some_and(|s| s >= 400)))
-            .collect();
-        let navs: Vec<f32> = page.navigations.iter().map(|(at, _)| frac(*at)).collect();
-        let errors: Vec<f32> = page.console.iter().filter(|c| c.level == "error").map(|c| frac(c.at)).collect();
-        let cursor = frac(t);
-        let (follow, playing, speed) = (focus.follow_live, focus.playing, focus.speed);
-        let title = pane_name(model, page).to_owned();
-        let browser = page.browser.clone().unwrap_or_default();
-        let theme = cx.theme().clone();
-        let bounds_cell = self.focus_scrub.clone();
-
-        let scrub = div()
-            .id("focus-scrub")
-            .w_full()
-            .h(px(26.))
-            .rounded_sm()
-            .bg(theme.secondary)
-            .child(
-                canvas(
-                    move |bounds, _, _| bounds_cell.set(bounds),
-                    move |bounds, _, window, _| {
-                        let (x0, y0) = (bounds.left(), bounds.top());
-                        let (wd, ht) = (bounds.size.width, bounds.size.height);
-                        let x = |f: f32| x0 + wd * f;
-                        for (f, bad) in &ticks {
-                            let c = if *bad { theme.red } else { theme.muted_foreground };
-                            window.paint_quad(fill(Bounds::new(point(x(*f), y0 + ht - px(7.)), size(px(1.), px(5.))), c));
-                        }
-                        for f in &navs {
-                            window.paint_quad(fill(Bounds::new(point(x(*f), y0 + px(2.)), size(px(2.), ht - px(4.))), theme.blue));
-                        }
-                        for f in &errors {
-                            window.paint_quad(fill(Bounds::new(point(x(*f) - px(2.), y0 + px(3.)), size(px(4.), px(4.))), theme.red));
-                        }
-                        window.paint_quad(fill(Bounds::new(point(x(cursor) - px(1.), y0), size(px(2.), ht)), theme.foreground));
-                    },
-                )
-                .size_full(),
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, e: &MouseDownEvent, _, cx| this.scrub_focus(w, e.position.x, cx)),
-            )
-            .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _, cx| {
-                if e.pressed_button == Some(MouseButton::Left) {
-                    this.scrub_focus(w, e.position.x, cx);
-                }
-            }))
-            .tooltip(tooltip_text("drag to scrub · blue: navigation · red: errors · ticks: requests"));
-
-        let frame_area = div()
-            .id("focus-frame")
-            .flex_1()
-            .min_h_0()
-            .overflow_hidden()
-            .relative()
-            .child(match image {
-                Some(img_) => img(img_).object_fit(ObjectFit::Contain).size_full().into_any_element(),
-                None => div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_color(muted)
-                    .child("No frames recorded for this page")
-                    .into_any_element(),
-            })
-            .when(no_recording && self.store.is_some(), |d| {
-                d.child(
-                    div()
-                        .absolute()
-                        .bottom_1()
-                        .left_2()
-                        .text_xs()
-                        .text_color(muted)
-                        .child("recording unavailable (disabled or removed by retention); showing last live frame"),
-                )
-            })
-            .on_scroll(cx.listener(move |this, e: &ScrollEvent, _, cx| {
-                let d = e.delta.pixel_delta(px(20.));
-                let d = f32::from(d.y) + f32::from(d.x);
-                let shift = e.modifiers.shift;
-                this.with_focus(w, |f, page, store, _| {
-                    if d == 0.0 {
-                        return;
-                    }
-                    f.playing = false;
-                    if shift {
-                        f.wheel_px += d;
-                        let steps = (f.wheel_px / WHEEL_PX_PER_FRAME).trunc();
-                        if steps != 0.0 {
-                            f.wheel_px -= steps * WHEEL_PX_PER_FRAME;
-                            f.step_frames(-(steps as i64), page, store);
-                        }
-                    } else {
-                        let (start, end) = f.bounds(page);
-                        let dt = -(d as f64 / 50.0) * WHEEL_FRACTION_PER_NOTCH * (end - start);
-                        let base = if f.follow_live { end } else { f.t };
-                        f.seek(base + dt, page);
-                    }
-                });
-                cx.notify();
-            }));
-
-        v_flex()
-            .size_full()
-            .p_2()
-            .gap_1()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        Button::new("focus-back")
-                            .label("← All pages")
-                            .small()
-                            .tooltip("Esc")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.close_focus(w);
-                                cx.notify();
-                            })),
-                    )
-                    .child(div().font_weight(FontWeight::SEMIBOLD).text_color(tone(tn, cx)).truncate().child(title))
-                    .child(div().text_xs().text_color(muted).child(browser))
-                    .child(div().flex_1().min_w_0().text_sm().text_color(muted).truncate().child(url)),
-            )
-            .child(
-                h_flex()
-                    .gap_1()
-                    .child(Button::new("f-start").label("⏮").xsmall().tooltip("Start").on_click(cx.listener(
-                        move |this, _, _, cx| {
-                            this.with_focus(w, |f, page, _, _| {
-                                let (s, _) = f.bounds(page);
-                                f.seek(s, page)
-                            });
-                            cx.notify();
-                        },
-                    )))
-                    .child(
-                        Button::new("f-prev")
-                            .label("◀")
-                            .xsmall()
-                            .tooltip("Previous frame (←, Shift+scroll)")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.with_focus(w, |f, page, store, _| f.step_frames(-1, page, store));
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("f-play")
-                            .label(if playing { "⏸" } else { "▶" })
-                            .xsmall()
-                            .tooltip("Space")
-                            .on_click(cx.listener(|this, _, window, cx| this.on_toggle_play(&TogglePlay, window, cx))),
-                    )
-                    .child(
-                        Button::new("f-next")
-                            .label("▶|")
-                            .xsmall()
-                            .tooltip("Next frame (→, Shift+scroll)")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.with_focus(w, |f, page, store, _| f.step_frames(1, page, store));
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("f-speed")
-                            .label(format!("{speed}×"))
-                            .xsmall()
-                            .tooltip("Playback speed")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(f) = this.view_mut(w).and_then(|v| v.focus.as_mut()) {
-                                    f.cycle_speed();
-                                }
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        div()
-                            .font_family(crate::fonts::mono())
-                            .text_sm()
-                            .child(format!("{:7.2}s / {:.2}s", (t - start) / 1000.0, (end - start) / 1000.0)),
-                    )
-                    .children(frame_label.map(|l| div().text_xs().text_color(muted).child(l)))
-                    .when(running, |row| {
-                        row.child(
-                            Button::new("f-live")
-                                .label("● LIVE")
-                                .xsmall()
-                                .selected(follow)
-                                .tooltip("Follow the page in real time")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if let Some(f) = this.view_mut(w).and_then(|v| v.focus.as_mut()) {
-                                        f.follow_live = true;
-                                        f.playing = false;
-                                        f.sync_lists = true;
-                                    }
-                                    cx.notify();
-                                })),
-                        )
-                    }),
-            )
-            .child(scrub)
-            .child(frame_area)
-    }
-
-    fn scrub_focus(&mut self, w: Which, x: Pixels, cx: &mut Context<Self>) {
-        let b = self.focus_scrub.get();
-        let frac = (f32::from(x - b.left()) / f32::from(b.size.width).max(1.0)).clamp(0.0, 1.0) as f64;
-        self.with_focus(w, |f, page, _, _| {
-            f.playing = false;
-            let (start, end) = f.bounds(page);
-            f.seek(start + frac * (end - start), page);
-        });
-        cx.notify();
     }
 
     // --- inspector ------------------------------------------------------------
@@ -1358,24 +1128,6 @@ impl TestudoApp {
     fn render_network(&mut self, w: Which, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(view) = self.view(w) else { return v_flex() };
         let muted = cx.theme().muted_foreground;
-        // Focus: all of the page's rows, synced to the scrub time.
-        if let Some(f) = &view.focus {
-            let model = f.recorded.as_deref().unwrap_or(&view.model);
-            let Some(page) = model.pages.get(&f.key) else { return v_flex() };
-            let count = page.network.len();
-            if f.sync_lists
-                && let Some(i) = page.network.iter().rposition(|r| r.started <= f.t)
-            {
-                self.net_scroll.scroll_to_item(i, ScrollStrategy::Center);
-            }
-            return v_flex().size_full().child(
-                uniform_list(("net-focus", w as usize), count, cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
-                    this.synced_network_rows(w, range, cx)
-                }))
-                .track_scroll(&self.net_scroll)
-                .flex_1(),
-            );
-        }
         let Some(page) = view.selected_page.as_ref().and_then(|k| view.model.pages.get(k)) else {
             return v_flex().child(div().text_sm().text_color(muted).child("click a page to inspect it"));
         };
@@ -1406,111 +1158,31 @@ impl TestudoApp {
         )
     }
 
-    fn synced_network_rows(&mut self, w: Which, range: std::ops::Range<usize>, cx: &mut Context<Self>) -> Vec<Stateful<Div>> {
-        let (text, blue, red) = (cx.theme().foreground, cx.theme().blue, cx.theme().red);
-        let Some(view) = self.view(w) else { return vec![] };
-        let Some(f) = &view.focus else { return vec![] };
-        let model = f.recorded.as_deref().unwrap_or(&view.model);
-        let Some(page) = model.pages.get(&f.key) else { return vec![] };
-        let t = f.t;
-        let mut out = Vec::new();
-        for i in range {
-            let Some(r) = page.network.get(i) else { break };
-            let state = row_state(r.started, r.finished, t);
-            let status = match (state, r.status, &r.error) {
-                (RowState::Pending, ..) => String::new(),
-                (RowState::InFlight, ..) => "…".to_owned(),
-                (_, Some(s), _) => s.to_string(),
-                (_, None, Some(e)) => format!("ERR {e}"),
-                _ => "?".to_owned(),
-            };
-            let ms = match (state, r.finished) {
-                (RowState::Done, Some(fin)) => format!("{:.0}ms", fin - r.started),
-                _ => String::new(),
-            };
-            let failed = r.error.is_some() || r.status.is_some_and(|s| s >= 400);
-            let color = match state {
-                RowState::Pending => text.opacity(0.3),
-                RowState::InFlight => blue,
-                RowState::Done if failed => red,
-                RowState::Done => text,
-            };
-            let line = format!(
-                "{:>8.3}s {:<6} {:>5} {:>7} {:<10} {}",
-                (r.started - page.opened_at) / 1000.0,
-                r.method,
-                status,
-                ms,
-                r.resource_type,
-                truncate(&r.url, 200)
-            );
-            let at = r.started;
-            out.push(
-                mono_row(line, color)
-                    .id(("net-row", i))
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.with_focus(w, |f, page, _, _| f.seek(at, page));
-                        cx.notify();
-                    })),
-            );
-        }
-        if let Some(f) = self.view_mut(w).and_then(|v| v.focus.as_mut()) {
-            f.sync_lists = false;
-        }
-        out
-    }
-
     fn render_console(&mut self, w: Which, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(view) = self.view(w) else { return v_flex() };
         let muted = cx.theme().muted_foreground;
         let (text, red, gold) = (cx.theme().foreground, cx.theme().red, cx.theme().yellow);
-        let (page, synced_t) = match &view.focus {
-            Some(f) => (f.recorded.as_deref().unwrap_or(&view.model).pages.get(&f.key), Some(f.t)),
-            None => (view.selected_page.as_ref().and_then(|k| view.model.pages.get(k)), None),
-        };
-        let Some(page) = page else {
+        let Some(page) = view.selected_page.as_ref().and_then(|k| view.model.pages.get(k)) else {
             return v_flex().child(div().text_sm().text_color(muted).child("click a page to inspect it"));
         };
-        let opened = page.opened_at;
-        let rows: Rc<Vec<(Hsla, SharedString, f64)>> = Rc::new(
+        let rows: Rc<Vec<(Hsla, SharedString)>> = Rc::new(
             page.console
                 .iter()
                 .map(|c| {
-                    let base = match c.level.as_str() {
+                    let color = match c.level.as_str() {
                         "error" => red,
                         "warning" | "warn" => gold,
                         _ => text,
                     };
-                    let color = if synced_t.is_some_and(|t| c.at > t) { base.opacity(0.3) } else { base };
-                    let line = match synced_t {
-                        Some(_) => format!("{:>8.3}s [{}] {}", (c.at - opened) / 1000.0, c.level, c.text),
-                        None => format!("[{}] {}", c.level, c.text),
-                    };
-                    (color, SharedString::from(line), c.at)
+                    (color, SharedString::from(format!("[{}] {}", c.level, c.text)))
                 })
                 .collect(),
         );
         let count = rows.len();
-        let synced = synced_t.is_some();
         v_flex().size_full().child(
-            uniform_list(
-                ("console", w as usize),
-                count,
-                cx.processor(move |_this, range: std::ops::Range<usize>, _, cx| {
-                    range
-                        .map(|i| {
-                            let (c, line, at) = rows[i].clone();
-                            mono_row(line, c).id(("console-row", i)).when(synced, |d| {
-                                d.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| {
-                                    this.with_focus(w, |f, page, _, _| f.seek(at, page));
-                                    cx.notify();
-                                }))
-                            })
-                        })
-                        .collect::<Vec<_>>()
-                }),
-            )
+            uniform_list(("console", w as usize), count, move |range, _, _| {
+                range.map(|i| mono_row(rows[i].1.clone(), rows[i].0)).collect()
+            })
             .track_scroll(&self.console_scroll)
             .flex_1(),
         )
@@ -1583,7 +1255,10 @@ impl TestudoApp {
                     .child(div().id("replay-tests").flex_1().min_h_0().overflow_y_scroll().child(self.render_runs(Which::Replay, cx)))
             });
 
-        let center: AnyElement = if self.replay.is_some() {
+        let replay_focus = self.replay.as_ref().is_some_and(|r| r.view.focus.is_some());
+        let center: AnyElement = if replay_focus {
+            self.render_focus(Which::Replay, window, cx).into_any_element()
+        } else if self.replay.is_some() {
             v_flex()
                 .size_full()
                 .child(self.render_timeline(cx))
@@ -1599,7 +1274,7 @@ impl TestudoApp {
                 .child("Select a run to replay it.")
                 .into_any_element()
         };
-        let inspector: AnyElement = if self.replay.is_some() {
+        let inspector: AnyElement = if self.replay.is_some() && !replay_focus {
             self.render_inspector(Which::Replay, window, cx).into_any_element()
         } else {
             div().into_any_element()
@@ -1608,11 +1283,14 @@ impl TestudoApp {
         h_resizable("history-main")
             .child(resizable_panel().size(px(360.)).size_range(px(220.)..px(700.)).child(sidebar))
             .child(
-                resizable_panel().child(
+                resizable_panel().child(if replay_focus {
+                    center
+                } else {
                     v_resizable("history-center")
                         .child(resizable_panel().child(center))
-                        .child(resizable_panel().size(px(240.)).size_range(px(90.)..px(700.)).child(inspector)),
-                ),
+                        .child(resizable_panel().size(px(240.)).size_range(px(90.)..px(700.)).child(inspector))
+                        .into_any_element()
+                }),
             )
             .into_any_element()
     }
