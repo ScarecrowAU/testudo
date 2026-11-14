@@ -374,6 +374,8 @@ mod tests {
         // Four desktop recordings in a square pane: 2×2; phones in a wide one: a row.
         assert_eq!(grid((1000.0, 900.0), (1280.0, 720.0), 4), (2, 2));
         assert_eq!(grid((1600.0, 600.0), (390.0, 844.0), 4), (4, 1));
+        // Six (this run + five earlier) desktop recordings in a square pane: 2×3.
+        assert_eq!(grid((1000.0, 900.0), (1280.0, 720.0), 6), (2, 3));
         // Three: never more cells than needed per row.
         assert_eq!(grid((900.0, 900.0), (1280.0, 720.0), 3), (1, 3));
     }

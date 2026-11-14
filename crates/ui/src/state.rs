@@ -282,8 +282,9 @@ pub struct PageFocus {
 pub const COMPARE_HISTORY: usize = 50;
 
 /// Earlier recordings of the focused test, newest first, with one loaded.
-/// At most this many earlier runs are shown at once.
-pub const MAX_COMPARED: usize = 4;
+/// At most this many earlier runs are shown at once (with this run: six,
+/// an even grid).
+pub const MAX_COMPARED: usize = 5;
 
 pub struct Compare {
     pub candidates: Vec<PriorPage>,
