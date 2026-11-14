@@ -38,6 +38,7 @@ make dev ARGS="~/dev/some-app --run playwright"  # args are passed to testudo
 ```sh
 make test   # cargo test --workspace
 make lint   # clippy, warnings are errors
+cargo fmt
 ```
 
 CI runs the tests on Linux and macOS for every pull request that touches code.
@@ -47,7 +48,7 @@ For changes to recording, adapters or the UI, also run a real suite through Test
 ## Conventions
 
 - **Tests** live next to the code they cover, in `#[cfg(test)]` modules. Add a regression test with a bug fix where the behaviour can be tested without a browser.
-- **Formatting**: the code isn't formatted with `rustfmt`. Match the style around your change, and don't reformat lines you aren't changing.
+- **Formatting**: run `cargo fmt` (configured in `rustfmt.toml`). CI fails on unformatted code.
 - **Errors** use `anyhow::Result` with `.context(...)`. Failures in background threads are logged with `tracing::warn!`; they must never take down the app or a run.
 - **Comments** explain why, not what. Modules start with a `//!` comment describing what they're for.
 - **Adapters** (`adapters/js`) are plain ESM with no dependencies, and must never write to or install anything in the user's project. They must do nothing when `TESTUDO_SOCKET` isn't set.
