@@ -2,7 +2,7 @@
 
 Native GUI test runner that controls, monitors and reports on multiple concurrent test suites, with live views of the headless browsers they drive.
 
-![Testudo running a Playwright and a Vitest suite: live browser pages in the grid, running, pending and failed tests in the sidebar, runner output below](docs/screenshots/live.png)
+![Testudo running a Playwright suite: one test still running in a live browser page, finished pages beside it, the tests in the sidebar and runner output below](docs/screenshots/live.png)
 
 ## Compatibility
 
