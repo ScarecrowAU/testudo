@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/core", "crates/store", "crates/ui", "crates/cli", "crates/dev"]
+members = ["crates/protocol", "crates/core", "crates/store", "crates/ui", "crates/cli", "crates/update", "crates/dev"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,7 @@ publish = false
 testudo-protocol = { path = "crates/protocol" }
 testudo-core = { path = "crates/core" }
 testudo-store = { path = "crates/store" }
+testudo-update = { path = "crates/update" }
 anyhow = "1"
 bytes = "1"
 serde = { version = "1", features = ["derive"] }

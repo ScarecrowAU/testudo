@@ -16,6 +16,32 @@ pub const DEFAULT_FRAME_MAX: u32 = 1024;
 pub const FRAME_RATES: [u32; 5] = [60, 30, 15, 10, 5];
 pub const DEFAULT_FRAME_RATE: u32 = 60;
 
+/// Where updates come from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UpdateChannel {
+    /// Signed GitHub releases.
+    #[default]
+    Stable,
+    /// Every new commit on `main`, built from source on this machine.
+    BleedingEdge,
+}
+
+impl UpdateChannel {
+    pub const ALL: [UpdateChannel; 2] = [UpdateChannel::Stable, UpdateChannel::BleedingEdge];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            UpdateChannel::Stable => "stable",
+            UpdateChannel::BleedingEdge => "bleeding-edge",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.name() == s)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -26,6 +52,9 @@ pub struct Settings {
     /// Where recordings and history are kept; None is the default data
     /// directory. Read at startup (TESTUDO_DATA_DIR still overrides).
     pub recordings_dir: Option<PathBuf>,
+    /// Look for a newer Testudo at startup and once a day.
+    pub check_updates: bool,
+    pub update_channel: UpdateChannel,
 }
 
 impl Default for Settings {
@@ -34,6 +63,8 @@ impl Default for Settings {
             frame_max_px: DEFAULT_FRAME_MAX,
             frame_rate: DEFAULT_FRAME_RATE,
             recordings_dir: None,
+            check_updates: true,
+            update_channel: UpdateChannel::Stable,
         }
     }
 }
@@ -106,9 +137,16 @@ mod tests {
             frame_max_px: 1280,
             frame_rate: 15,
             recordings_dir: Some("/data/rec".into()),
+            check_updates: false,
+            update_channel: UpdateChannel::BleedingEdge,
         };
         s.save_to(&file).unwrap();
         assert_eq!(Settings::load_from(&file), s);
+        assert!(
+            std::fs::read_to_string(&file)
+                .unwrap()
+                .contains(r#""update_channel": "bleeding-edge""#)
+        );
 
         std::fs::write(&file, "{}").unwrap();
         assert_eq!(

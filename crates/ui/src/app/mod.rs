@@ -22,7 +22,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use testudo_core::discover::{Suite, discover};
-use testudo_core::settings::{DEFAULT_FRAME_MAX, FRAME_SIZES, Settings};
+use testudo_core::settings::{DEFAULT_FRAME_MAX, FRAME_SIZES, Settings, UpdateChannel};
 use testudo_core::{Orchestrator, RunHandle, RunId, RunSpec, now_ms};
 use testudo_protocol::Event;
 use testudo_store::{RunRow, Store};
@@ -38,6 +38,7 @@ use crate::state::{InspectorTab, PageFocus, PagesView, Replay, Retired, StreamFi
 
 mod focus;
 mod settings;
+mod update;
 
 const HISTORY_LIMIT: usize = 200;
 /// How many recent runs the History summary covers.
@@ -94,6 +95,7 @@ pub struct TestudoApp {
     /// User settings (settings menu), saved on change.
     settings: Settings,
     store: Option<Rc<Store>>,
+    updates: update::Updates,
     mode: Mode,
 
     live: PagesView,
@@ -203,6 +205,7 @@ impl TestudoApp {
             orchestrator: s.orchestrator.take().expect("orchestrator"),
             settings: s.settings.clone(),
             store: s.store.take(),
+            updates: update::Updates::new(),
             mode: Mode::Live,
             live: PagesView::new(),
             handles: HashMap::new(),
@@ -239,6 +242,7 @@ impl TestudoApp {
         let _ = s.rt.take();
         app.refresh_history();
         app.scan(cx);
+        app.start_update_checks(cx);
         if let Some(filter) = s.autorun.as_deref() {
             app.autorun(filter, cx);
         }
@@ -327,6 +331,11 @@ impl TestudoApp {
             if s.focus_page.is_some() && std::env::var_os("TESTUDO_DEBUG_RERUN").is_some() {
                 app.rerun_test(Which::Replay, cx);
             }
+        }
+        // Test hook (debug builds only): check for updates at startup.
+        #[cfg(debug_assertions)]
+        if std::env::var_os("TESTUDO_DEBUG_CHECK_UPDATES").is_some() {
+            app.check_for_updates(cx);
         }
         #[cfg(debug_assertions)]
         if std::env::var_os("TESTUDO_DEBUG_OPEN_PICKER").is_some() {
@@ -1078,6 +1087,7 @@ impl Render for TestudoApp {
             .on_action(cx.listener(Self::on_toggle_play))
             .on_action(cx.listener(Self::on_close_focus))
             .child(self.render_top_bar(window, cx))
+            .children(self.render_update_banner(cx))
             .children(
                 self.error
                     .clone()
@@ -1180,7 +1190,7 @@ impl TestudoApp {
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let app = cx.entity().downgrade();
         let store = self.store.clone();
-        let panel = cx.new(|_| settings::SettingsPanel::new(app, store));
+        let panel = cx.new(|cx| settings::SettingsPanel::new(app, store, cx));
         window.open_dialog(cx, move |dialog, _, _| {
             dialog.title("Settings").w(px(600.)).child(panel.clone())
         });
