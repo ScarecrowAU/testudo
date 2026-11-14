@@ -1182,7 +1182,30 @@ impl TestudoApp {
         Some(panel.into_any_element())
     }
 
+    /// A run-list row, with the selected run (its output is in the Output tab)
+    /// marked by an accent bar down every one of its rows: header, counts,
+    /// tests and notes. Other runs keep a transparent bar so rows align.
     fn render_run_row(&mut self, w: Which, row: &ListRow, cx: &mut Context<Self>) -> AnyElement {
+        let run_index = match *row {
+            ListRow::Header(ri) | ListRow::Counts(ri) | ListRow::Test(ri, _) | ListRow::Note(ri, _, _) => Some(ri),
+            ListRow::Gap => None,
+        };
+        let selected = run_index.is_some_and(|ri| {
+            self.view(w)
+                .is_some_and(|v| v.model.runs.get(ri).is_some_and(|r| v.selected_run.as_deref() == Some(&r.id)))
+        });
+        let accent = cx.theme().blue;
+        let content = self.run_row_content(w, row, cx);
+        div()
+            .w_full()
+            .border_l_2()
+            .pl_1()
+            .border_color(if selected { accent } else { gpui_kit::transparent_black() })
+            .child(content)
+            .into_any_element()
+    }
+
+    fn run_row_content(&mut self, w: Which, row: &ListRow, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
         let Some(view) = self.view(w) else { return div().into_any_element() };
@@ -1198,17 +1221,10 @@ impl TestudoApp {
                     (Some(Some(code)), _) => (format!("Failed · exit {code}"), Tone::Failed),
                     (Some(None), _) => ("Killed".to_owned(), Tone::Failed),
                 };
-                let selected = view.selected_run.as_deref() == Some(&run.id);
                 let collapsed = view.collapsed_runs.contains(&run.id);
                 let run_id = run.id.clone();
                 let toggle_id = run.id.clone();
-                // The selected run (its output is in the Output tab) gets an
-                // accent bar down its header and counts, not a fill behind
-                // the label.
                 let mut header = line()
-                    .border_l_2()
-                    .pl_1()
-                    .border_color(if selected { theme.blue } else { gpui_kit::transparent_black() })
                     .gap_1()
                     .child(
                         div()
@@ -1281,11 +1297,7 @@ impl TestudoApp {
                 let Some(run) = view.model.runs.get(ri) else { return line().into_any_element() };
                 let (passed, failed, running) = run.counts();
                 let total = run.total_tests.map(|t| format!(" of {t}")).unwrap_or_default();
-                let selected = view.selected_run.as_deref() == Some(&run.id);
                 line()
-                    .border_l_2()
-                    .pl_1()
-                    .border_color(if selected { theme.blue } else { gpui_kit::transparent_black() })
                     .gap_1()
                     .when(passed > 0, |d| d.child(pill(format!("✔ {passed}"), theme.green)))
                     .when(failed > 0, |d| d.child(pill(format!("✘ {failed}"), theme.red)))
