@@ -55,12 +55,17 @@ export default class TestudoPlaywrightReporter {
   }
 
   onTestEnd(test, result) {
+    // test.skip(condition, reason) records the reason as a 'skip' annotation.
+    const skip = [...(result.annotations ?? []), ...(test.annotations ?? [])].find(
+      (a) => a.type === 'skip' && a.description,
+    );
     this.t.send({
       type: 'testEnd',
       testId: test.id,
       status: result.status,
       durationMs: result.duration,
       error: result.error?.message && plain(result.error.message),
+      note: result.status === 'skipped' && skip?.description ? plain(skip.description) : undefined,
     });
   }
 

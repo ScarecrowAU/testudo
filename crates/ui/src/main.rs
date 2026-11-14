@@ -17,6 +17,11 @@ use testudo_core::{Hub, IngestServer, Orchestrator, adapters_dir};
 use testudo_store::{Recorder, Retention, Store, default_data_dir};
 
 fn main() -> Result<()> {
+    // Desktop launchers don't run the user's shell rc files, so runners would
+    // miss nvm/Homebrew/pnpm on PATH. Must happen before any threads start.
+    // SAFETY: single-threaded at this point.
+    let imported = unsafe { testudo_core::shell_env::import_login_shell_env() };
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,wgpu=warn,naga=warn".into()),
@@ -61,7 +66,7 @@ fn main() -> Result<()> {
         IngestServer::bind(hub.clone())?
     };
     let orchestrator = Orchestrator::new(&ingest, hub.clone(), adapters_dir(), rt.handle().clone());
-    tracing::info!(socket = %ingest.socket_path().display(), adapters = %adapters_dir().display(), "testudo ready");
+    tracing::info!(socket = %ingest.socket_path().display(), adapters = %adapters_dir().display(), imported_shell_vars = imported, "testudo ready");
 
     startup.orchestrator = Some(orchestrator.clone());
     startup.rt = Some(rt.handle().clone());

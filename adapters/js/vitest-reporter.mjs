@@ -44,6 +44,7 @@ export default class TestudoVitestReporter {
       status: STATUS[result.state] ?? 'unknown',
       durationMs: testCase.diagnostic()?.duration,
       error: result.errors?.[0]?.message && plain(result.errors[0].message),
+      note: result.state === 'skipped' && result.note ? plain(result.note) : undefined,
     });
   }
 

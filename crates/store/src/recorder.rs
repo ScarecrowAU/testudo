@@ -190,6 +190,7 @@ impl Writer {
                 status,
                 duration_ms,
                 error,
+                ..
             } => {
                 let status = serde_json::to_value(status)?.as_str().unwrap_or("unknown").to_owned();
                 c.execute(

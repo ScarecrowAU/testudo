@@ -128,6 +128,9 @@ pub enum Event {
         duration_ms: Option<f64>,
         #[serde(default)]
         error: Option<String>,
+        /// Why a test was skipped (Playwright skip annotation, Vitest note).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
     },
     RunEnd {
         status: String,

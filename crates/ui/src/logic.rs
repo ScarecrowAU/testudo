@@ -123,6 +123,29 @@ pub fn url_path(url: &str) -> &str {
         .unwrap_or(url)
 }
 
+/// First non-empty line, without terminal colour codes: for one-line
+/// summaries of runner messages (skip reasons carry whole call logs).
+pub fn summary_line(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // ESC [ ... final-byte
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default().to_owned()
+}
+
 pub fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_owned()
@@ -216,6 +239,14 @@ mod tests {
     }
 
     #[test]
+    fn summary_line_strips_codes_and_takes_first_line() {
+        let note = "backend unreachable: connect ECONNREFUSED ::1:3100\nCall log:\n\x1b[2m  - → GET /healthz\x1b[22m";
+        assert_eq!(summary_line(note), "backend unreachable: connect ECONNREFUSED ::1:3100");
+        assert_eq!(summary_line("\n  \x1b[31mred\x1b[39m  \n"), "red");
+        assert_eq!(summary_line(""), "");
+    }
+
+    #[test]
     fn url_paths() {
         assert_eq!(url_path("http://localhost:3000/feeds?view=all"), "/feeds?view=all");
         assert_eq!(url_path("https://example.com"), "https://example.com");
@@ -267,6 +298,7 @@ mod tests {
             status,
             duration_ms: None,
             error: None,
+            note: None,
         };
         let close = |page: &str| Event::PageClosed { page_id: page.into() };
         let events = [

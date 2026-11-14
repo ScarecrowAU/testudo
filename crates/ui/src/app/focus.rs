@@ -81,6 +81,8 @@ impl TestudoApp {
             focus.image.clone()
         };
         let no_recording = !focus.follow_live && !focus.has_recording() && !running && self.store.is_some();
+        let skipped = (test.and_then(|t| t.status) == Some(testudo_protocol::TestStatus::Skipped))
+            .then(|| test.and_then(|t| t.note.clone()).unwrap_or_default());
         let frame_label = (!focus.follow_live)
             .then(|| focus.frame_position())
             .flatten()
@@ -285,6 +287,7 @@ impl TestudoApp {
                     .child("No frames recorded for this page")
                     .into_any_element(),
             })
+            .when_some(skipped, |d, note| d.child(skip_card(note, &theme)))
             .when(running && follow, |d| {
                 d.child(div().absolute().top_2().left_2().child(pill("● LIVE", theme.red).bg(theme.background.opacity(0.8))))
             })

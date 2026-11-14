@@ -121,6 +121,7 @@ fn recorder_persists_events_frames_and_summary() {
             status: TestStatus::Failed,
             duration_ms: Some(5.0),
             error: Some("boom".into()),
+            note: None,
         }),
     );
     hub.publish("r1", ev(Event::ProcessExited { code: Some(1) }));
@@ -189,6 +190,7 @@ fn late_test_result_after_exit_still_counts() {
         status: TestStatus::Passed,
         duration_ms: None,
         error: None,
+        note: None,
     };
     for e in [begin("a"), begin("b"), end("a"), Event::ProcessExited { code: Some(0) }, end("b")] {
         hub.publish("r1", Message::Event(e));

@@ -101,6 +101,8 @@ pub struct Test {
     pub duration_ms: Option<f64>,
     pub error: Option<String>,
     pub current_step: Option<String>,
+    /// Why the test was skipped, when the runner says.
+    pub note: Option<String>,
     /// Every reported step (Playwright actions, expects, test.step), in start
     /// order, stamped with hub receive time like everything else.
     pub steps: Vec<StepRow>,
@@ -323,6 +325,7 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
                 t.duration_ms = None;
                 t.steps.clear();
                 t.current_step = None;
+                t.note = None;
             } else {
                 run.tests.push(Test {
                     id: test_id,
@@ -334,6 +337,7 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
                     duration_ms: None,
                     error: None,
                     current_step: None,
+                    note: None,
                     steps: Vec::new(),
                 });
             }
@@ -377,11 +381,13 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
             status,
             duration_ms,
             error,
+            note,
         } => {
             if let Some(t) = run.test_mut(&test_id) {
                 t.status = Some(status);
                 t.duration_ms = duration_ms;
                 t.error = error;
+                t.note = note;
                 t.current_step = None;
             }
         }
