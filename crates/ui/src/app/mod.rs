@@ -783,6 +783,20 @@ fn app_icon() -> Arc<Image> {
     ICON.clone()
 }
 
+/// Height of a page tile's title/URL bar; the frame fits above it.
+const TILE_LABEL_H: f32 = 46.;
+
+/// A recorded page frame, fitted and centred inside its container (which
+/// must be `relative`) whatever its shape. gpui's `img` takes the picture's
+/// aspect ratio unless both its width and height are definite: with
+/// `size_full` alone a flex-sized container's height is indefinite, so a
+/// portrait (mobile) frame was drawn full-width, zoomed and clipped. Pinned to
+/// the container (absolute, 100% × 100%), the box is the container and
+/// `Contain` fits the picture inside it.
+fn frame_img(image: Arc<RenderImage>) -> Img {
+    img(image).object_fit(ObjectFit::Contain).absolute().inset_0().size_full()
+}
+
 /// A Lucide icon bundled with gpui-kit's assets.
 fn media_icon(name: &str) -> Icon {
     Icon::empty().path(format!("icons/{name}.svg"))
@@ -1382,14 +1396,19 @@ impl TestudoApp {
                     .bg(theme.secondary.opacity(0.5))
                     .cursor_pointer()
                     .hover(|d| d.border_color(theme.muted_foreground))
-                    // The frame fills the tile; labels sit on top of it.
+                    // The frame fits the tile above the label bar (status pills
+                    // sit on top of it).
                     .child(
                         div()
-                            .size_full()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .bottom(px(TILE_LABEL_H))
                             .when(closed, |d| d.opacity(0.7))
                             .when(skipped.is_some(), |d| d.opacity(0.15))
                             .child(match frame {
-                            Some(f) => img(f).object_fit(ObjectFit::Contain).size_full().into_any_element(),
+                            Some(f) => frame_img(f).into_any_element(),
                             None => div()
                                 .size_full()
                                 .flex()
@@ -1417,8 +1436,9 @@ impl TestudoApp {
                             .bottom_0()
                             .left_0()
                             .right_0()
+                            .h(px(TILE_LABEL_H))
+                            .justify_center()
                             .px_2()
-                            .py_1()
                             .bg(theme.background.opacity(0.82))
                             .child(div().truncate().text_sm().font_weight(FontWeight::SEMIBOLD).child(title.clone()))
                             .child(div().truncate().text_xs().text_color(muted).child(url_path(&page.url).to_owned())),

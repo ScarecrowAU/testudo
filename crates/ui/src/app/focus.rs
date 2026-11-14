@@ -364,7 +364,7 @@ impl TestudoApp {
             .border_color(theme.border)
             .bg(theme.secondary.opacity(0.4))
             .child(match image {
-                Some(img_) => img(img_).object_fit(ObjectFit::Contain).size_full().into_any_element(),
+                Some(img_) => frame_img(img_).into_any_element(),
                 None => div()
                     .size_full()
                     .flex()
@@ -581,7 +581,8 @@ impl TestudoApp {
                             .border_1()
                             .border_color(theme.border)
                             .bg(theme.secondary.opacity(0.4))
-                            .children(image.map(|i| img(i).object_fit(ObjectFit::Contain).size_full()))
+                            .relative()
+                            .children(image.map(frame_img))
                             .into_any_element(),
                     ));
                 }
