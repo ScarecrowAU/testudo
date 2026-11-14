@@ -9,6 +9,7 @@
 #   lib/testudo/adapters/          JS adapters the runner injects
 #     (not share/testudo: with PREFIX=~/.local that is the history data dir)
 #   share/applications/testudo.desktop
+#   share/icons/hicolor/{scalable,NxN}/apps/testudo.{svg,png}
 #
 # DESTDIR is honoured for staged/package installs.
 
@@ -20,6 +21,8 @@ BINDIR      := $(DESTDIR)$(PREFIX)/bin
 LIBDIR      := $(DESTDIR)$(PREFIX)/lib/testudo
 ADAPTERDIR  := $(LIBDIR)/adapters
 APPDIR      := $(DESTDIR)$(PREFIX)/share/applications
+ICONDIR     := $(DESTDIR)$(PREFIX)/share/icons/hicolor
+ICON_SIZES  := 16 24 32 48 64 128 256 512
 
 BINS     := testudo testudo-cli
 ADAPTERS := $(wildcard adapters/js/*.mjs) adapters/js/package.json
@@ -37,12 +40,16 @@ install: build ## build, then install to $(PREFIX) (default ~/.local)
 	install -m 755 $(addprefix target/release/,$(BINS)) $(BINDIR)/
 	install -m 644 $(ADAPTERS) $(ADAPTERDIR)/
 	install -m 644 packaging/testudo.desktop $(APPDIR)/
+	install -Dm 644 packaging/testudo.svg $(ICONDIR)/scalable/apps/testudo.svg
+	for s in $(ICON_SIZES); do install -Dm 644 packaging/icons/testudo-$$s.png $(ICONDIR)/$${s}x$${s}/apps/testudo.png; done
+	-[ -n "$(DESTDIR)" ] || ! command -v gtk-update-icon-cache >/dev/null 2>&1 || gtk-update-icon-cache -qtf $(ICONDIR)
 	-[ -n "$(DESTDIR)" ] || ! command -v update-desktop-database >/dev/null 2>&1 || update-desktop-database $(APPDIR)
 	@echo "installed to $(DESTDIR)$(PREFIX)"
 	@case ":$$PATH:" in *":$(PREFIX)/bin:"*) ;; *) echo "note: $(PREFIX)/bin is not on PATH";; esac
 
 uninstall: ## remove an install from $(PREFIX); recorded history is kept
 	rm -f $(addprefix $(BINDIR)/,$(BINS)) $(APPDIR)/testudo.desktop
+	rm -f $(ICONDIR)/scalable/apps/testudo.svg $(foreach s,$(ICON_SIZES),$(ICONDIR)/$(s)x$(s)/apps/testudo.png)
 	rm -rf $(LIBDIR)
 	@echo "removed from $(DESTDIR)$(PREFIX) (history in ~/.local/share/testudo/{testudo.db,runs,exports} untouched)"
 

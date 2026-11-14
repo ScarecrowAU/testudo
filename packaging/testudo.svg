@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Testudo: a tortoise whose shell is the Roman shield formation it is
+       named after, in test-pass green on the app's dark background. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#232a35"/>
+      <stop offset="1" stop-color="#11151b"/>
+    </linearGradient>
+    <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5ee59a"/>
+      <stop offset="1" stop-color="#22a35f"/>
+    </linearGradient>
+    <linearGradient id="skin" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c9d3df"/>
+      <stop offset="1" stop-color="#8d99a8"/>
+    </linearGradient>
+    <clipPath id="dome">
+      <path d="M92 336 A164 214 0 0 1 420 336 Z"/>
+    </clipPath>
+  </defs>
+
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bg)"/>
+
+  <g transform="translate(256 262) scale(1.08) translate(-262 -258)">
+  <!-- legs, tail, head (behind the shell) -->
+  <g fill="url(#skin)">
+    <rect x="136" y="322" width="54" height="82" rx="24"/>
+    <rect x="318" y="322" width="54" height="82" rx="24"/>
+    <path d="M100 330 L58 356 L104 352 Z"/>
+    <path d="M396 306 C410 276 434 264 452 274 C472 286 468 318 446 326 C428 332 410 328 396 322 Z"/>
+  </g>
+  <circle cx="448" cy="292" r="7" fill="#11151b"/>
+
+  <!-- shell: interlocking shields, brick-laid like the formation -->
+  <g clip-path="url(#dome)">
+    <rect x="80" y="100" width="352" height="250" fill="#11151b"/>
+    <g fill="url(#shield)">
+      <!-- row 0 (crown) -->
+      <rect x="210" y="114" width="92" height="50" rx="10"/>
+      <!-- row 1 -->
+      <rect x="160" y="172" width="92" height="50" rx="10"/>
+      <rect x="260" y="172" width="92" height="50" rx="10"/>
+      <!-- row 2 -->
+      <rect x="110" y="230" width="92" height="50" rx="10"/>
+      <rect x="210" y="230" width="92" height="50" rx="10"/>
+      <rect x="310" y="230" width="92" height="50" rx="10"/>
+      <!-- row 3 -->
+      <rect x="60" y="288" width="92" height="50" rx="10"/>
+      <rect x="160" y="288" width="92" height="50" rx="10"/>
+      <rect x="260" y="288" width="92" height="50" rx="10"/>
+      <rect x="360" y="288" width="92" height="50" rx="10"/>
+    </g>
+    <!-- shield bosses -->
+    <g fill="#c8f7dc" opacity="0.85">
+      <circle cx="256" cy="140" r="7"/>
+      <circle cx="206" cy="197" r="7"/>
+      <circle cx="306" cy="197" r="7"/>
+      <circle cx="156" cy="255" r="7"/>
+      <circle cx="256" cy="255" r="7"/>
+      <circle cx="356" cy="255" r="7"/>
+      <circle cx="206" cy="313" r="7"/>
+      <circle cx="306" cy="313" r="7"/>
+    </g>
+  </g>
+  <!-- shell rim -->
+  <rect x="84" y="330" width="344" height="22" rx="11" fill="#1a7a47"/>
+  </g>
+</svg>
