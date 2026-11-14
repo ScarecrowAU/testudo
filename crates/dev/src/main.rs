@@ -14,7 +14,7 @@
 //! - The app's log also goes to `target/dev/testudo.log` (fresh per start;
 //!   the previous one is kept as `testudo.prev.log`).
 //! - With a local Pitot running (`make pitot`), the app's spans and logs are
-//!   exported to it (`~/.config/testudo/pitot/testudo.env`), unless
+//!   exported to it (`dev/pitot/.state/testudo.env`), unless
 //!   TESTUDO_OTLP_ENDPOINT is already set.
 //!
 //! Usage: testudo-dev [-- args for testudo]
@@ -147,7 +147,7 @@ fn start(bin: &Path, args: &[String], log_file: &Path) -> Option<Child> {
     let mut cmd = Command::new(bin);
     cmd.args(args).env("TESTUDO_LOG_FILE", log_file);
     if std::env::var_os("TESTUDO_OTLP_ENDPOINT").is_none() {
-        let pitot = pitot_env(&pitot_state().join("testudo.env"));
+        let pitot = pitot_env(&pitot_state(bin));
         if let Some((_, endpoint)) = pitot.iter().find(|(k, _)| k == "TESTUDO_OTLP_ENDPOINT") {
             log(&format!("exporting traces and logs to Pitot at {endpoint}"));
         }
@@ -162,14 +162,14 @@ fn start(bin: &Path, args: &[String], log_file: &Path) -> Option<Child> {
     }
 }
 
-/// Where `scripts/pitot.sh` keeps its secrets and certificates.
-fn pitot_state() -> PathBuf {
-    std::env::var_os("PITOT_STATE").map(PathBuf::from).unwrap_or_else(|| {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"))
-            .join("testudo/pitot")
-    })
+/// Where `scripts/pitot.sh` keeps the exporter settings (`PITOT_STATE`, or
+/// `dev/pitot/.state` in the repo `bin` was built in).
+fn pitot_state(bin: &Path) -> PathBuf {
+    let dir = std::env::var_os("PITOT_STATE").map(PathBuf::from).unwrap_or_else(|| {
+        let root = bin.ancestors().nth(3).unwrap_or(Path::new("."));
+        root.join("dev/pitot/.state")
+    });
+    dir.join("testudo.env")
 }
 
 /// `KEY=value` lines from `make pitot`, if that Pitot is answering.
