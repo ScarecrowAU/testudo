@@ -229,7 +229,8 @@ pub enum ConsoleFilter {
     Warnings,
 }
 
-const SPEEDS: [f32; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
+/// Playback speeds offered by both players.
+pub const SPEEDS: [f32; 6] = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0];
 /// While a page is still recording, re-read its frame index at most this often.
 const REINDEX_EVERY_MS: u128 = 400;
 
@@ -395,10 +396,6 @@ impl PageFocus {
         }
     }
 
-    pub fn cycle_speed(&mut self) {
-        let i = SPEEDS.iter().position(|s| *s == self.speed).unwrap_or(2);
-        self.speed = SPEEDS[(i + 1) % SPEEDS.len()];
-    }
 
     /// (start, end) of the page's timeline; a running page's end is now.
     pub fn bounds(&self, page: &Page) -> (f64, f64) {
@@ -681,11 +678,6 @@ impl Replay {
         true
     }
 
-    pub fn cycle_speed(&mut self) {
-        let speeds = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0];
-        let i = speeds.iter().position(|s| *s == self.speed).unwrap_or(2);
-        self.speed = speeds[(i + 1) % speeds.len()];
-    }
 
     /// A focus view over the whole run's events, at the replay time.
     pub fn open_focus(&mut self, key: PageKey) {

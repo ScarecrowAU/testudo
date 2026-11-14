@@ -11,6 +11,7 @@ use futures::channel::mpsc::UnboundedReceiver;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Disableable, Selectable, Sizable, h_flex, h_resizable, resizable_panel, v_flex, v_resizable};
 use gpui_kit::prelude::*;
@@ -679,6 +680,38 @@ fn skip_card(note: String, theme: &gpui_kit::component::Theme) -> Div {
                     .child(if reason.is_empty() { "skipped before the page was used".to_owned() } else { reason }),
             ),
     )
+}
+
+/// Playback speed picker: the current speed, opening a menu of `SPEEDS`.
+fn speed_menu(
+    id: &'static str,
+    current: f32,
+    cx: &mut Context<TestudoApp>,
+    set: impl Fn(&mut TestudoApp, f32) + 'static,
+) -> impl IntoElement {
+    let app = cx.entity().downgrade();
+    let set = Rc::new(set);
+    Button::new(id)
+        .label(speed_label(current))
+        .xsmall()
+        .ghost()
+        .tooltip("Playback speed")
+        .dropdown_menu(move |mut menu, _, _| {
+            for s in crate::state::SPEEDS {
+                let (app, set) = (app.clone(), set.clone());
+                menu = menu.item(PopupMenuItem::new(speed_label(s)).checked(s == current).on_click(move |_, _, cx| {
+                    let _ = app.update(cx, |this, cx| {
+                        set(this, s);
+                        cx.notify();
+                    });
+                }));
+            }
+            menu
+        })
+}
+
+fn speed_label(s: f32) -> String {
+    format!("{s}×")
 }
 
 fn mono_row(text: impl Into<SharedString>, color: Hsla) -> Div {
@@ -1956,14 +1989,11 @@ impl TestudoApp {
                             cx.notify();
                         },
                     )))
-                    .child(Button::new("tl-speed").label(format!("{speed}×")).xsmall().on_click(cx.listener(
-                        |this, _, _, cx| {
-                            if let Some(r) = this.replay.as_mut() {
-                                r.cycle_speed();
-                            }
-                            cx.notify();
-                        },
-                    )))
+                    .child(speed_menu("tl-speed", speed, cx, |this, s| {
+                        if let Some(r) = this.replay.as_mut() {
+                            r.speed = s;
+                        }
+                    }))
                     .child(div().font_family(crate::fonts::mono()).text_sm().child(time))
                     .child(
                         Checkbox::new("tl-keep")

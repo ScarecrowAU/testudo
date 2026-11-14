@@ -515,19 +515,11 @@ impl TestudoApp {
                     .text_sm()
                     .child(format!("{} / {}", fmt_secs(t - start), fmt_secs(end - start))),
             )
-            .child(
-                Button::new("f-speed")
-                    .label(format!("{speed}×"))
-                    .xsmall()
-                    .ghost()
-                    .tooltip("Playback speed")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(f) = this.view_mut(w).and_then(|v| v.focus.as_mut()) {
-                            f.cycle_speed();
-                        }
-                        cx.notify();
-                    })),
-            )
+            .child(speed_menu("f-speed", speed, cx, move |this, s| {
+                if let Some(f) = this.view_mut(w).and_then(|v| v.focus.as_mut()) {
+                    f.speed = s;
+                }
+            }))
             .children(frame_label.map(|l| div().text_xs().text_color(muted).child(l)))
             .child(div().flex_1().min_w_0().truncate().text_xs().text_color(muted).child(hover_label))
             .when(running, |row| {
