@@ -11,6 +11,18 @@ pub mod settings;
 pub mod shell_env;
 
 pub use hub::{Hub, HubMessage, RunId, now_ms};
+
+/// A path for display, with the home directory shown as `~`.
+pub fn tilde(p: &std::path::Path) -> String {
+    match std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        Some(home) if !home.as_os_str().is_empty() => match p.strip_prefix(&home) {
+            Ok(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+            Ok(rest) => format!("~/{}", rest.display()),
+            Err(_) => p.display().to_string(),
+        },
+        _ => p.display().to_string(),
+    }
+}
 pub use ingest::IngestServer;
 pub use runner::{CANCEL_GRACE, Orchestrator, RunHandle, RunSpec, RunnerKind};
 

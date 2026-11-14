@@ -318,9 +318,13 @@ fn rel(root: &Path, p: &Path) -> String {
     p.strip_prefix(root).unwrap_or(p).display().to_string()
 }
 
+/// A suite directory relative to the scanned root; the root itself is named
+/// after its folder ("acme-shop", not ".").
 fn rel_dir(root: &Path, dir: &Path) -> String {
     match dir.strip_prefix(root) {
-        Ok(r) if r.as_os_str().is_empty() => ".".into(),
+        Ok(r) if r.as_os_str().is_empty() => {
+            root.file_name().map_or_else(|| ".".to_owned(), |n| n.to_string_lossy().into_owned())
+        }
         Ok(r) => r.display().to_string(),
         Err(_) => dir.display().to_string(),
     }
@@ -392,6 +396,16 @@ mod tests {
         assert_eq!(suites.len(), 1);
         assert_eq!(suites[0].id, "vitest.workspace.ts");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn suite_at_the_root_is_named_after_the_folder() {
+        let root = std::env::temp_dir().join(format!("testudo-rootname-{}", std::process::id())).join("acme-shop");
+        let _ = std::fs::remove_dir_all(&root);
+        touch(&root, "playwright.config.ts", "export default {}");
+        let suites = discover(&root);
+        assert_eq!(suites[0].name, "acme-shop · Playwright");
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
 
     #[test]

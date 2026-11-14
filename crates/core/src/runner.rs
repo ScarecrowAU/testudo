@@ -212,7 +212,7 @@ impl Orchestrator {
                     notes.push(format!(
                         "[testudo] node {} ({} wants {}{})",
                         choice.version,
-                        choice.source.display(),
+                        crate::tilde(&choice.source),
                         choice.wanted,
                         if choice.exact { "" } else { "; closest installed" }
                     ));
@@ -402,7 +402,7 @@ fn local_bin(cwd: &Path, name: &str, pkgs: &[&str]) -> Result<(String, Option<St
         .iter()
         .find_map(|p| crate::discover::package_version(cwd, p))
         .unwrap_or_else(|| "?".into());
-    let note = format!("[testudo] {name} {version} ({})", bin.display());
+    let note = format!("[testudo] {name} {version} ({})", crate::tilde(&bin));
     Ok((bin.display().to_string(), Some(note)))
 }
 
