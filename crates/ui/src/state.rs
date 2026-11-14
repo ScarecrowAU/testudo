@@ -42,6 +42,8 @@ pub struct PagesView {
     pub keep_closed_pages: bool,
     pub hide_repeated_stderr: bool,
     pub focus: Option<PageFocus>,
+    /// Failing tests whose full error is expanded in the run list.
+    pub expanded_tests: std::collections::HashSet<String>,
 }
 
 impl PagesView {
@@ -54,6 +56,7 @@ impl PagesView {
             keep_closed_pages: true,
             hide_repeated_stderr: true,
             focus: None,
+            expanded_tests: Default::default(),
         }
     }
 
@@ -459,6 +462,7 @@ impl Replay {
                 keep_closed_pages,
                 hide_repeated_stderr,
                 focus,
+                expanded_tests,
                 ..
             } = old;
             retired.extend(model.take_frames());
@@ -467,6 +471,7 @@ impl Replay {
             self.view.keep_closed_pages = keep_closed_pages;
             self.view.hide_repeated_stderr = hide_repeated_stderr;
             self.view.focus = focus;
+            self.view.expanded_tests = expanded_tests;
             self.cursor = 0;
             self.shown.clear();
         }

@@ -38,18 +38,6 @@ struct ConsoleItem {
     text: SharedString,
 }
 
-fn pill(text: impl Into<SharedString>, color: Hsla) -> Div {
-    div()
-        .flex_none()
-        .px_2()
-        .rounded_full()
-        .whitespace_nowrap()
-        .text_xs()
-        .bg(color.opacity(0.16))
-        .text_color(color)
-        .child(text.into())
-}
-
 fn step_kind(category: Option<&str>) -> &'static str {
     match category {
         Some("pw:api") => "action",

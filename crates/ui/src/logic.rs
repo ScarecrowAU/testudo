@@ -149,6 +149,29 @@ fn local_offset_secs() -> i64 {
     0
 }
 
+/// "just now", "6m ago", "3h ago", "2d ago" relative to `now_ms`.
+pub fn fmt_ago(ms: f64, now_ms: f64) -> String {
+    let s = ((now_ms - ms) / 1000.0).max(0.0) as u64;
+    match s {
+        0..=59 => "just now".into(),
+        60..=3599 => format!("{}m ago", s / 60),
+        3600..=86_399 => format!("{}h ago", s / 3600),
+        _ => format!("{}d ago", s / 86_400),
+    }
+}
+
+/// Compact duration: "820ms", "4.2s", "3m 05s".
+pub fn fmt_dur(ms: f64) -> String {
+    if ms < 1000.0 {
+        format!("{ms:.0}ms")
+    } else if ms < 60_000.0 {
+        format!("{:.1}s", ms / 1000.0)
+    } else {
+        let s = (ms / 1000.0) as u64;
+        format!("{}m {:02}s", s / 60, s % 60)
+    }
+}
+
 pub fn expand_tilde(p: &str) -> String {
     match (p.strip_prefix("~/"), std::env::var("HOME")) {
         (Some(rest), Ok(home)) => format!("{home}/{rest}"),
@@ -171,6 +194,18 @@ mod tests {
         assert!(looks_like_failure("Error: page.waitForURL: Test timeout of 30000ms exceeded."));
         assert!(looks_like_failure(" × fails on purpose 117ms"));
         assert!(looks_like_failure("AssertionError: expected 2 to be 3"));
+    }
+
+    #[test]
+    fn relative_time_and_durations() {
+        let now = 10_000_000.0;
+        assert_eq!(fmt_ago(now - 5_000.0, now), "just now");
+        assert_eq!(fmt_ago(now - 6.0 * 60_000.0, now), "6m ago");
+        assert_eq!(fmt_ago(now - 3.0 * 3_600_000.0, now), "3h ago");
+        assert_eq!(fmt_ago(now - 2.0 * 86_400_000.0, now), "2d ago");
+        assert_eq!(fmt_dur(820.0), "820ms");
+        assert_eq!(fmt_dur(4_210.0), "4.2s");
+        assert_eq!(fmt_dur(185_000.0), "3m 05s");
     }
 
     #[test]
