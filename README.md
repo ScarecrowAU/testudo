@@ -2,6 +2,8 @@
 
 <h1 align="center">Testudo</h1>
 
+<p align="center"><em>Watch your tests, not your terminal.</em></p>
+
 Native GUI test runner that controls, monitors and reports on multiple concurrent test suites, with live views of the headless browsers they drive.
 
 ![Testudo running a Playwright suite: one test still running in a live browser page, finished pages beside it, the tests in the sidebar and runner output below](docs/screenshots/live.png)
