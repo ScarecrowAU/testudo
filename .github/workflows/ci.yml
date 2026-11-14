@@ -57,7 +57,7 @@ jobs:
         run: |
           name=testudo-${GITHUB_REF_NAME}-$(uname -s | tr A-Z a-z)-$(uname -m)
           mkdir -p "dist/$name/adapters"
-          cp target/release/testudo target/release/testudo-cli README.md "dist/$name/"
+          cp target/release/testudo target/release/testudo-cli README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
           cp adapters/js/*.mjs adapters/js/package.json "dist/$name/adapters/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
 
