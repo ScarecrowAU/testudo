@@ -700,7 +700,9 @@ fn speed_menu(
         .outline()
         .dropdown_caret(true)
         .tooltip("Playback speed")
-        .dropdown_menu(move |mut menu, _, _| {
+        // Open above the chip (the menu's bottom-left corner on it), so the
+        // chip stays visible; the controls sit at the bottom of the window.
+        .dropdown_menu_with_anchor(Anchor::BottomLeft, move |mut menu, _, _| {
             menu = menu.label("Playback speed");
             for s in crate::state::SPEEDS {
                 let (app, set) = (app.clone(), set.clone());
