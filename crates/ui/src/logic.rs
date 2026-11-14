@@ -289,6 +289,18 @@ pub fn fmt_dur(ms: f64) -> String {
     }
 }
 
+/// A path for display, with the home directory shown as `~`.
+pub fn tilde(p: &std::path::Path) -> String {
+    match std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        Some(home) if !home.as_os_str().is_empty() => match p.strip_prefix(&home) {
+            Ok(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+            Ok(rest) => format!("~/{}", rest.display()),
+            Err(_) => p.display().to_string(),
+        },
+        _ => p.display().to_string(),
+    }
+}
+
 pub fn expand_tilde(p: &str) -> String {
     match (p.strip_prefix("~/"), std::env::var("HOME")) {
         (Some(rest), Ok(home)) => format!("{home}/{rest}"),

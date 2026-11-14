@@ -232,7 +232,7 @@ impl Render for SettingsPanel {
                                     .text_xs()
                                     .font_family(crate::fonts::mono())
                                     .text_color(muted)
-                                    .child(shown_dir.display().to_string())
+                                    .child(tilde(&shown_dir))
                                     .tooltip(tooltip_text(shown_dir.display().to_string())),
                             )
                             .child(button("rec-dir-change").label("Change…").small().outline().on_click(

@@ -26,7 +26,7 @@ use testudo_protocol::Event;
 use testudo_store::{RunRow, Store};
 
 use crate::bridge::UiMsg;
-use crate::logic::{rerun_args, test_order, 
+use crate::logic::{rerun_args, tilde, test_order, 
     REPEAT_THRESHOLD, RowState, Tone, expand_tilde, fmt_ago, fmt_dur, fmt_secs, fmt_time, status_label, summary_line,
     url_path, looks_like_failure, ordered_pages, pane_name,
     row_state, status_icon, truncate,
@@ -2046,7 +2046,7 @@ impl TestudoApp {
                         },
                     ))),
             )
-            .children(self.store.as_ref().map(|s| div().text_xs().text_color(muted).truncate().child(s.dir().display().to_string())))
+            .children(self.store.as_ref().map(|s| div().text_xs().text_color(muted).truncate().child(tilde(s.dir()))))
             .child(self.render_history_summary(cx))
             .child(
                 div()
