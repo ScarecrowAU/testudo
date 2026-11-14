@@ -2,6 +2,8 @@
 
 Native GUI test runner that controls, monitors and reports on multiple concurrent test suites, with live views of the headless browsers they drive.
 
+![Testudo running a Playwright and a Vitest suite: live browser pages in the grid, running, pending and failed tests in the sidebar, runner output below](docs/screenshots/live.png)
+
 ## Compatibility
 
 | Test system | Status | Live browser view | Re-run one test | Tested with |
@@ -21,6 +23,24 @@ Native GUI test runner that controls, monitors and reports on multiple concurren
 - **Results**: tests, steps (Playwright), skip reasons and tests not started yet, live and in History.
 - **Re-run one test**: `file:line`, plus `--project` for Playwright.
 - **Browsers**: Chromium is captured on every supported Playwright version; Firefox and WebKit only where Playwright has its cross-browser `page.screencast` API (recent versions, not yet tested).
+
+## Screenshots
+
+**Watch or scrub one page** with its steps, network and console in step with the recording:
+
+![Focus view: one recorded page with a timeline scrubber and its test steps](docs/screenshots/focus.png)
+
+**Compare with earlier runs** of the same test, played side by side in step; arrows move through the test's history:
+
+![Comparison: this run and an earlier run of the same test, aligned by step](docs/screenshots/compare.png)
+
+**History** of every run, with pass rate, flaky tests and a timeline you can replay:
+
+![History: run list with summary, run timeline and recorded pages](docs/screenshots/history.png)
+
+**Settings** for recording resolution and frame rate, where recordings are kept, and cleanup:
+
+![Settings dialog](docs/screenshots/settings.png)
 
 ## How it works
 
