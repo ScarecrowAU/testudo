@@ -37,6 +37,7 @@ data dir: $TESTUDO_DATA_DIR, else $XDG_DATA_HOME/testudo, else ~/.local/share/te
 retention: TESTUDO_KEEP_RUNS (200), TESTUDO_MAX_FRAMES_MB (5120), TESTUDO_KEEP_FRAMES=all|failed";
 
 fn main() -> Result<()> {
+    exit_quietly_on_closed_stdout();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
@@ -105,6 +106,26 @@ fn update(args: &[String]) -> Result<()> {
     testudo_update::install(&update, &install, &mut |line| eprintln!("{line}"))?;
     println!("Updated to {}. Restart Testudo to use it.", update.label);
     Ok(())
+}
+
+/// When stdout is a pipe the reader closed early (`testudo-cli history |
+/// head`), std's print macros panic. Exit like a tool killed by SIGPIPE
+/// instead. (SIGPIPE itself stays ignored: it would also kill us on a write
+/// to a runner socket that closed.)
+fn exit_quietly_on_closed_stdout() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let msg = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        if msg.starts_with("failed printing to stdout") && msg.contains("Broken pipe") {
+            std::process::exit(141);
+        }
+        default(info)
+    }));
 }
 
 fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
