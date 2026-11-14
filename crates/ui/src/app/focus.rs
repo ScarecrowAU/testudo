@@ -103,6 +103,7 @@ impl TestudoApp {
         );
         let hover_label = focus.hover_label.clone().unwrap_or_default();
         // Earlier runs of this test beside the frame: (label, status, image).
+        let by_step = focus.compare_by_step;
         let compare_target = test.and_then(|t| t.file.clone().map(|f| (f, t.title_path.clone())));
         let now = now_ms();
         let compared: Option<Vec<ComparedCell>> = focus.compare.as_ref().map(|lanes| {
@@ -118,7 +119,12 @@ impl TestudoApp {
                         _ => TestStatus::Unknown,
                     });
                     let dur = l.prior.duration_ms.map(|d| format!(" · {}", fmt_dur(d))).unwrap_or_default();
-                    let label = format!("{} ({}){dur}", fmt_time(l.prior.run_started_at), fmt_ago(l.prior.run_started_at, now));
+                    let fallback = if l.by_time_fallback { " · steps differ, by time" } else { "" };
+                    let label = format!(
+                        "{} ({}){dur}{fallback}",
+                        fmt_time(l.prior.run_started_at),
+                        fmt_ago(l.prior.run_started_at, now)
+                    );
                     (label, status, l.image.clone())
                 })
                 .collect()
@@ -270,7 +276,36 @@ impl TestudoApp {
                     .child(div().flex_1())
                     .when(self.store.is_some() && compare_target.is_some(), |row| {
                         let comparing = compared.is_some();
-                        row.child(
+                        let align = |id: &'static str, label: &'static str, step: bool, tip: &'static str| {
+                            Button::new(id)
+                                .label(label)
+                                .xsmall()
+                                .when(by_step == step, |b| b.primary())
+                                .when(by_step != step, |b| b.ghost())
+                                .tooltip(tip)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(f) = this.view_mut(w).and_then(|v| v.focus.as_mut()) {
+                                        f.compare_by_step = step;
+                                    }
+                                    cx.notify();
+                                }))
+                        };
+                        row.when(comparing, |row| {
+                            row.child(div().text_xs().text_color(muted).child("Align by"))
+                                .child(align(
+                                    "f-align-step",
+                                    "Step",
+                                    true,
+                                    "Show each earlier run at the same test step as this one",
+                                ))
+                                .child(align(
+                                    "f-align-time",
+                                    "Time",
+                                    false,
+                                    "Show each earlier run at the same time since its page opened",
+                                ))
+                        })
+                        .child(
                             Button::new("f-compare")
                                 .label(if comparing { "Hide comparison" } else { "Compare with previous runs" })
                                 .xsmall()

@@ -242,6 +242,7 @@ impl TestudoApp {
                     })
                 {
                     f.open_compare(&test.0, &test.1, &store);
+                    f.compare_by_step = std::env::var("TESTUDO_DEBUG_COMPARE").as_deref() != Ok("time");
                 }
                 window.focus(&app.focus_handle, cx);
             }
@@ -467,6 +468,19 @@ impl TestudoApp {
         out
     }
 
+    /// The focused page's test steps, (start, title), while comparing.
+    fn compare_steps(&self, w: Which) -> Vec<(f64, String)> {
+        let Some(view) = self.view(w) else { return Vec::new() };
+        let Some(focus) = view.focus.as_ref().filter(|f| f.compare.is_some()) else { return Vec::new() };
+        let model = focus.recorded.as_deref().unwrap_or(&view.model);
+        model
+            .pages
+            .get(&focus.key)
+            .and_then(|p| model.test_for_page(p))
+            .map(|t| t.steps.iter().map(|s| (s.started, s.title.clone())).collect())
+            .unwrap_or_default()
+    }
+
     fn focused_view(&self) -> Option<Which> {
         match self.mode {
             Mode::Live if self.live.focus.is_some() => Some(Which::Live),
@@ -490,11 +504,12 @@ impl TestudoApp {
         animate |= self.live.reap(now_ms(), &mut self.retired);
         for w in [Which::Live, Which::Replay] {
             let running_live = w == Which::Live;
+            let steps = self.compare_steps(w);
             let r = self.with_focus(w, |f, page, store, retired| {
                 let running = running_live && page.closed_at.is_none() && f.recorded.is_none();
                 let a = f.tick(page, running, dt_ms);
                 f.update_image(page, store, retired);
-                f.update_compare(page, retired);
+                f.update_compare(page, &steps, retired);
                 a
             });
             animate |= r.unwrap_or(false);

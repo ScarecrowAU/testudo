@@ -250,6 +250,8 @@ pub struct PageFocus {
     /// Side-by-side recordings of the same test from earlier runs, played in
     /// step with this page (same time since page open).
     pub compare: Option<Vec<CompareLane>>,
+    /// Line compared recordings up by test step (else by time since open).
+    pub compare_by_step: bool,
 }
 
 /// Earlier runs shown next to the focused page.
@@ -257,6 +259,11 @@ pub const COMPARE_RUNS: usize = 3;
 
 pub struct CompareLane {
     pub prior: PriorPage,
+    /// The earlier run's steps for this test: (start time, title).
+    steps: Vec<(f64, String)>,
+    /// Step alignment found no matching step at the current position, so
+    /// this lane is shown by time.
+    pub by_time_fallback: bool,
     frames: Option<FrameIndex>,
     shown: Option<usize>,
     pub image: Option<Arc<RenderImage>>,
@@ -265,7 +272,24 @@ pub struct CompareLane {
 impl CompareLane {
     fn new(prior: PriorPage, store: &Store) -> Self {
         let frames = FrameIndex::open(&store.frame_path(&prior.run_id, &prior.page_id)).ok();
-        Self { prior, frames, shown: None, image: None }
+        let mut model = Model::new();
+        for (at, ev) in store.run_events(&prior.run_id).unwrap_or_default() {
+            model.apply(&prior.run_id, at, ev);
+        }
+        let steps = model
+            .runs
+            .first()
+            .and_then(|r| r.test(&prior.test_id))
+            .map(|t| t.steps.iter().map(|s| (s.started, s.title.clone())).collect())
+            .unwrap_or_default();
+        Self {
+            prior,
+            steps,
+            by_time_fallback: false,
+            frames,
+            shown: None,
+            image: None,
+        }
     }
 
     /// Length of this recording: page lifetime, or its last frame if later.
@@ -304,6 +328,7 @@ impl PageFocus {
             console_filter: ConsoleFilter::All,
             hover_label: None,
             compare: None,
+            compare_by_step: true,
         }
     }
 
@@ -334,13 +359,21 @@ impl PageFocus {
             .collect()
     }
 
-    /// Show each compared recording at the same time since page open as the
-    /// scrub position (before its first frame: its first frame).
-    pub fn update_compare(&mut self, page: &Page, retired: &mut Retired) {
-        let rel = self.t.min(self.bounds(page).1) - page.opened_at;
+    /// Show each compared recording at the point matching the scrub position:
+    /// the same step (see `align_by_step`) or the same time since page open.
+    /// `steps` are this page's test steps. Before its first frame: its first
+    /// frame.
+    pub fn update_compare(&mut self, page: &Page, steps: &[(f64, String)], retired: &mut Retired) {
+        let t = self.t.min(self.bounds(page).1);
+        let by_step = self.compare_by_step;
         for lane in self.compare.iter_mut().flatten() {
+            let stepped = by_step
+                .then(|| crate::logic::align_by_step(steps, &lane.steps, t, page.opened_at, lane.prior.opened_at))
+                .flatten();
+            lane.by_time_fallback = by_step && stepped.is_none();
+            let at = stepped.unwrap_or(lane.prior.opened_at + (t - page.opened_at));
             let Some(f) = lane.frames.as_mut().filter(|f| !f.entries.is_empty()) else { continue };
-            let i = f.index_at(lane.prior.opened_at + rel).unwrap_or(0);
+            let i = f.index_at(at).unwrap_or(0);
             if lane.shown == Some(i) {
                 continue;
             }

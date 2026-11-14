@@ -205,6 +205,7 @@ pub struct TestResultRow {
 pub struct PriorPage {
     pub run_id: String,
     pub page_id: String,
+    pub test_id: String,
     pub run_started_at: f64,
     pub status: Option<String>,
     pub duration_ms: Option<f64>,
@@ -348,7 +349,7 @@ impl Store {
         let title_path = serde_json::to_string(title_path)?;
         // SQLite: bare columns come from the row that MAX() picked.
         let mut stmt = self.conn.prepare_cached(
-            "SELECT t.run_id, p.page_id, r.started_at, t.status, t.duration_ms, MAX(p.opened_at), p.closed_at
+            "SELECT t.run_id, p.page_id, r.started_at, t.status, t.duration_ms, MAX(p.opened_at), p.closed_at, t.test_id
              FROM tests t
              JOIN runs r ON r.id = t.run_id
              JOIN pages p ON p.run_id = t.run_id AND p.test_id = t.test_id
@@ -366,6 +367,7 @@ impl Store {
                 duration_ms: r.get(4)?,
                 opened_at: r.get(5)?,
                 closed_at: r.get(6)?,
+                test_id: r.get(7)?,
             })
         })?;
         let mut out = Vec::new();

@@ -146,6 +146,36 @@ pub fn summary_line(text: &str) -> String {
     out.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default().to_owned()
 }
 
+/// Where another recording of the same test should be, by test step, when
+/// this one is at `t`. Steps are `(start time, title)` in start order; the
+/// current step is matched to the same occurrence of the same title in the
+/// other recording, and the time into that step carried over (held at the
+/// other step's end if this run is slower). Before the first step: time
+/// since page open, held at the other's first step. `None` when the other
+/// recording has no matching step; compare by time then.
+pub fn align_by_step(
+    cur: &[(f64, String)],
+    other: &[(f64, String)],
+    t: f64,
+    cur_open: f64,
+    other_open: f64,
+) -> Option<f64> {
+    let Some(k) = cur.iter().rposition(|s| s.0 <= t) else {
+        let at = other_open + (t - cur_open);
+        return Some(other.first().map_or(at, |s| at.min(s.0)));
+    };
+    let title = &cur[k].1;
+    let occurrence = cur[..k].iter().filter(|s| &s.1 == title).count();
+    let j = other
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| &s.1 == title)
+        .nth(occurrence)
+        .map(|(j, _)| j)?;
+    let at = other[j].0 + (t - cur[k].0);
+    Some(other.get(j + 1).map_or(at, |next| at.min(next.0 - 0.001)))
+}
+
 pub fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_owned()
@@ -244,6 +274,27 @@ mod tests {
         assert_eq!(summary_line(note), "backend unreachable: connect ECONNREFUSED ::1:3100");
         assert_eq!(summary_line("\n  \x1b[31mred\x1b[39m  \n"), "red");
         assert_eq!(summary_line(""), "");
+    }
+
+    #[test]
+    fn step_alignment() {
+        let steps = |v: &[(f64, &str)]| v.iter().map(|(t, s)| (*t, s.to_string())).collect::<Vec<_>>();
+        // This run: opened at 0, click at 100, fill at 200, click at 300.
+        let cur = steps(&[(100.0, "click"), (200.0, "fill"), (300.0, "click")]);
+        // Other run (opened at 1000) is slower: click 1500, fill 1900, click 2600.
+        let other = steps(&[(1500.0, "click"), (1900.0, "fill"), (2600.0, "click")]);
+        let at = |t| align_by_step(&cur, &other, t, 0.0, 1000.0);
+        assert_eq!(at(50.0), Some(1050.0), "before steps: time since open");
+        assert_eq!(at(99.0), Some(1099.0));
+        assert_eq!(at(210.0), Some(1910.0), "10ms into fill");
+        assert_eq!(at(320.0), Some(2620.0), "second click, not the first");
+        // Before the first step, held at the other's first step.
+        assert_eq!(align_by_step(&cur, &steps(&[(1020.0, "click")]), 50.0, 0.0, 1000.0), Some(1020.0));
+        // Other run is faster: held just before its next step.
+        let fast = steps(&[(1100.0, "click"), (1150.0, "fill")]);
+        assert_eq!(align_by_step(&cur, &fast, 190.0, 0.0, 1000.0), Some(1149.999));
+        // No matching step.
+        assert_eq!(align_by_step(&cur, &steps(&[(1100.0, "goto")]), 150.0, 0.0, 1000.0), None);
     }
 
     #[test]
