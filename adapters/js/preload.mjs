@@ -13,7 +13,9 @@ import path from 'node:path';
 import { connect } from './transport.mjs';
 
 const PROJECT_ROOT = process.env.TESTUDO_PROJECT_ROOT ?? process.cwd();
-const FRAME_SIZE = { width: 800, height: 800 };
+// Recording resolution from Testudo's settings: frames fit within an N×N box.
+const FRAME_MAX = Math.min(4096, Math.max(160, Number.parseInt(process.env.TESTUDO_FRAME_MAX ?? '', 10) || 1024));
+const FRAME_SIZE = { width: FRAME_MAX, height: FRAME_MAX };
 const FRAME_QUALITY = 70;
 
 const PATCHED = Symbol.for('testudo.patched');

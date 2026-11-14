@@ -6477,6 +6477,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "libc",
+ "serde",
  "serde_json",
  "testudo-protocol",
  "tokio",

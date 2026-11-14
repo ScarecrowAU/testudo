@@ -29,6 +29,8 @@ pub mod env {
     pub const SOCKET: &str = "TESTUDO_SOCKET";
     pub const RUN_ID: &str = "TESTUDO_RUN_ID";
     pub const PROJECT_ROOT: &str = "TESTUDO_PROJECT_ROOT";
+    /// Recorded frames fit within this many pixels on each side.
+    pub const FRAME_MAX: &str = "TESTUDO_FRAME_MAX";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

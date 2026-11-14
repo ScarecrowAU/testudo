@@ -7,6 +7,7 @@ pub mod ingest;
 pub mod node_env;
 pub mod procs;
 pub mod runner;
+pub mod settings;
 pub mod shell_env;
 
 pub use hub::{Hub, HubMessage, RunId, now_ms};

@@ -19,6 +19,7 @@ use gpui_kit::component::{ActiveTheme, Disableable, Selectable, Sizable, h_flex,
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use testudo_core::discover::{Suite, discover};
+use testudo_core::settings::{DEFAULT_FRAME_MAX, FRAME_SIZES, Settings};
 use testudo_core::{Orchestrator, RunHandle, RunId, RunSpec, now_ms};
 use testudo_protocol::Event;
 use testudo_store::{RunRow, Store};
@@ -68,6 +69,7 @@ pub struct Startup {
     pub rt: Option<tokio::runtime::Handle>,
     pub store: Option<Rc<Store>>,
     pub ui_rx: Option<UnboundedReceiver<UiMsg>>,
+    pub settings: Settings,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -85,6 +87,8 @@ enum Which {
 
 pub struct TestudoApp {
     orchestrator: Orchestrator,
+    /// User settings (settings menu), saved on change.
+    settings: Settings,
     store: Option<Rc<Store>>,
     mode: Mode,
 
@@ -188,6 +192,7 @@ impl TestudoApp {
 
         let mut app = Self {
             orchestrator: s.orchestrator.take().expect("orchestrator"),
+            settings: s.settings.clone(),
             store: s.store.take(),
             mode: Mode::Live,
             live: PagesView::new(),
@@ -944,6 +949,45 @@ impl TestudoApp {
                         })),
                 )
             })
+            .child(div().flex_1())
+            .child(self.settings_menu(cx))
+    }
+
+    /// Gear button opening the settings menu. Changes are saved at once and
+    /// apply to runs started afterwards.
+    fn settings_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let app = cx.entity().downgrade();
+        let current = self.settings.frame_max();
+        Button::new("settings")
+            .icon(media_icon("settings"))
+            .small()
+            .ghost()
+            .tooltip("Settings")
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
+                menu = menu.label("Recording resolution (next run)");
+                for px in FRAME_SIZES {
+                    let app = app.clone();
+                    let label = if px == DEFAULT_FRAME_MAX {
+                        format!("{px} × {px} px (default)")
+                    } else {
+                        format!("{px} × {px} px")
+                    };
+                    menu = menu.item(PopupMenuItem::new(label).checked(px == current).on_click(move |_, _, cx| {
+                        let _ = app.update(cx, |this, cx| this.set_frame_max(px, cx));
+                    }));
+                }
+                menu
+            })
+    }
+
+    #[tracing::instrument(level = "info", skip(self, cx))]
+    fn set_frame_max(&mut self, px: u32, cx: &mut Context<Self>) {
+        self.settings.frame_max_px = px;
+        self.orchestrator.set_frame_max(self.settings.frame_max());
+        if let Err(e) = self.settings.save() {
+            self.error = Some(format!("could not save settings: {e:#}"));
+        }
+        cx.notify();
     }
 
     // --- live ---------------------------------------------------------------

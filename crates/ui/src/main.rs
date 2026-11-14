@@ -71,6 +71,9 @@ fn main() -> Result<()> {
         IngestServer::bind(hub.clone())?
     };
     let orchestrator = Orchestrator::new(&ingest, hub.clone(), adapters_dir(), rt.handle().clone());
+    let settings = testudo_core::settings::Settings::load();
+    orchestrator.set_frame_max(settings.frame_max());
+    startup.settings = settings;
     tracing::info!(socket = %ingest.socket_path().display(), adapters = %adapters_dir().display(), imported_shell_vars = imported, "testudo ready");
 
     startup.orchestrator = Some(orchestrator.clone());
@@ -151,7 +154,7 @@ fn main() -> Result<()> {
 
 // gpui-kit's `Assets` embeds only the icons its components use; add the
 // player's media icons.
-gpui_kit::assets::icon_assets!(MediaIcons, [Play, Pause, SkipBack, StepBack, StepForward]);
+gpui_kit::assets::icon_assets!(MediaIcons, [Play, Pause, SkipBack, StepBack, StepForward, Settings]);
 
 struct AppAssets;
 

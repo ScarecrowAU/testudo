@@ -98,6 +98,8 @@ struct Inner {
     rt: tokio::runtime::Handle,
     connections: crate::ingest::Connections,
     next_id: AtomicU64,
+    /// Recording resolution for runs started from now on (settings).
+    frame_max: std::sync::atomic::AtomicU32,
     /// Runs whose process has not exited yet, with their cancel switch.
     active: Mutex<HashMap<RunId, Arc<watch::Sender<bool>>>>,
     run_exited: Notify,
@@ -113,10 +115,16 @@ impl Orchestrator {
                 rt,
                 connections: ingest.connections(),
                 next_id: AtomicU64::new(1),
+                frame_max: std::sync::atomic::AtomicU32::new(crate::settings::DEFAULT_FRAME_MAX),
                 active: Mutex::new(HashMap::new()),
                 run_exited: Notify::new(),
             }),
         }
+    }
+
+    /// Recording resolution for runs started after this call.
+    pub fn set_frame_max(&self, px: u32) {
+        self.inner.frame_max.store(px, Ordering::Relaxed);
     }
 
     pub fn active_runs(&self) -> usize {
@@ -219,6 +227,7 @@ impl Orchestrator {
             .env(env::SOCKET, &inner.socket)
             .env(env::RUN_ID, &id)
             .env(env::PROJECT_ROOT, &cwd)
+            .env(env::FRAME_MAX, inner.frame_max.load(Ordering::Relaxed).to_string())
             .env("FORCE_COLOR", "0")
             .env("PATH", &path_env)
             // Testudo's own telemetry settings are not for the test run.
