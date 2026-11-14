@@ -17,7 +17,7 @@ use testudo_store::export::{ExportOptions, export_mp4};
 use testudo_store::frames::FrameIndex;
 use testudo_store::{PriorPage, RunRow, Store};
 
-use crate::bridge::decode_jpeg;
+use crate::perf::ui_decode;
 use crate::model::{Effect, Model, Page, PageKey};
 
 pub type Retired = Vec<Arc<RenderImage>>;
@@ -379,7 +379,7 @@ impl PageFocus {
             if lane.shown == Some(i) {
                 continue;
             }
-            if let Some(image) = f.read(i).ok().and_then(|j| decode_jpeg(&j)) {
+            if let Some(image) = f.read(i).ok().and_then(|j| ui_decode(&j)) {
                 retired.extend(lane.image.replace(image));
                 lane.shown = Some(i);
             }
@@ -461,7 +461,7 @@ impl PageFocus {
         if self.shown == Some(i) {
             return;
         }
-        if let Some(image) = f.read(i).ok().and_then(|j| decode_jpeg(&j)) {
+        if let Some(image) = f.read(i).ok().and_then(|j| ui_decode(&j)) {
             retired.extend(self.image.replace(image));
             self.shown = Some(i);
         }
@@ -644,7 +644,7 @@ impl Replay {
                 continue;
             }
             let at = index.entries[i].at;
-            if let Some(image) = index.read(i).ok().and_then(|j| decode_jpeg(&j)) {
+            if let Some(image) = index.read(i).ok().and_then(|j| ui_decode(&j)) {
                 if let Some(p) = self.view.model.pages.get_mut(&key) {
                     p.last_frame_ts = 0.0; // allow stepping backwards
                 }

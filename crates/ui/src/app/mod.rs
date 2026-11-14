@@ -74,7 +74,7 @@ enum Mode {
 }
 
 /// Which `PagesView` a widget belongs to.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Which {
     Live,
     Replay,
@@ -104,6 +104,11 @@ pub struct TestudoApp {
     /// Frames replaced since the last render; freed with `drop_image` there.
     retired: Retired,
     last_render: Instant,
+    perf: crate::perf::Perf,
+    /// Scroll position of the run list (live sidebar / History tests).
+    run_scroll: UniformListScrollHandle,
+    #[cfg(debug_assertions)]
+    started_at: Instant,
     focus_handle: FocusHandle,
     focus_scrub: Rc<Cell<Bounds<Pixels>>>,
     timeline_scrub: Rc<Cell<Bounds<Pixels>>>,
@@ -194,6 +199,10 @@ impl TestudoApp {
             picking: false,
             retired: Vec::new(),
             last_render: Instant::now(),
+            perf: Default::default(),
+            run_scroll: UniformListScrollHandle::new(),
+            #[cfg(debug_assertions)]
+            started_at: Instant::now(),
             focus_handle: cx.focus_handle(),
             focus_scrub: Rc::new(Cell::new(Bounds::default())),
             timeline_scrub: Rc::new(Cell::new(Bounds::default())),
@@ -215,6 +224,16 @@ impl TestudoApp {
             if let (Some(secs), Some(replay), Some(store)) = (s.replay_at, app.replay.as_mut(), app.store.clone()) {
                 let t = replay.start + secs * 1000.0;
                 replay.seek(t, &store, &mut app.retired);
+            }
+            // Test hook (debug builds only): open every failing test's error.
+            #[cfg(debug_assertions)]
+            if std::env::var_os("TESTUDO_DEBUG_EXPAND_ERRORS").is_some()
+                && let Some(replay) = app.replay.as_mut()
+            {
+                let v = &mut replay.view;
+                let failing: Vec<String> =
+                    v.model.runs.iter().flat_map(|r| &r.tests).filter(|t| t.error.is_some()).map(|t| t.id.clone()).collect();
+                v.expanded_tests.extend(failing);
             }
             if let (Some(page), Some(replay)) = (s.focus_page.as_deref(), app.replay.as_mut()) {
                 replay.open_focus(PageKey {
@@ -336,6 +355,7 @@ impl TestudoApp {
         }
     }
 
+    #[tracing::instrument(level = "info", skip_all, fields(suite = %suite.name))]
     fn start_suite(&mut self, suite: &Suite, cx: &mut Context<Self>) {
         let args = self
             .args_input
@@ -357,6 +377,7 @@ impl TestudoApp {
         cx.notify();
     }
 
+    #[tracing::instrument(level = "info", skip(self))]
     fn open_replay(&mut self, run_id: &str) {
         let Some(store) = &self.store else {
             self.error = Some("history unavailable: store failed to open".into());
@@ -421,6 +442,7 @@ impl TestudoApp {
         }
     }
 
+    #[tracing::instrument(level = "info", skip_all, fields(view = ?w, page.id = %key.page_id, run.id = %key.run_id))]
     fn open_focus(&mut self, w: Which, key: PageKey, window: &mut Window, cx: &mut Context<Self>) {
         match w {
             Which::Live => self.open_live_focus(key),
@@ -434,6 +456,7 @@ impl TestudoApp {
         cx.notify();
     }
 
+    #[tracing::instrument(level = "info", skip_all, fields(view = ?w))]
     fn close_focus(&mut self, w: Which) {
         let mut retired = Vec::new();
         if let Some(v) = self.view_mut(w)
@@ -479,6 +502,47 @@ impl TestudoApp {
             .and_then(|p| model.test_for_page(p))
             .map(|t| t.steps.iter().map(|s| (s.started, s.title.clone())).collect())
             .unwrap_or_default()
+    }
+
+    /// Test hook (debug builds only): with TESTUDO_DEBUG_AUTOSCROLL=1, scroll the
+    /// run list at 1200 px/s from 4s to 10s after start, reversing at either
+    /// end, as wheel scrolling would.
+    #[cfg(debug_assertions)]
+    fn debug_autoscroll(&mut self, window: &mut Window) {
+        if std::env::var_os("TESTUDO_DEBUG_AUTOSCROLL").is_none() {
+            return;
+        }
+        let t = self.started_at.elapsed().as_secs_f32();
+        if !(4.0..10.0).contains(&t) {
+            if t < 4.0 {
+                window.request_animation_frame();
+            }
+            return;
+        }
+        let handle = self.run_scroll.0.borrow().base_handle.clone();
+        let max = f32::from(handle.max_offset().y).max(1.0);
+        let travel = (t - 4.0) * 1200.0;
+        let y = travel % (2.0 * max);
+        let y = if y > max { 2.0 * max - y } else { y };
+        handle.set_offset(point(px(0.), px(-y)));
+        self.perf.input("run_list");
+        window.request_animation_frame();
+    }
+
+    /// What is on screen, for slow-frame reports.
+    fn frame_ctx(&self) -> crate::perf::FrameCtx {
+        let w = if self.mode == Mode::History { Which::Replay } else { Which::Live };
+        let view = self.view(w);
+        crate::perf::FrameCtx {
+            history: w == Which::Replay,
+            focus: view.is_some_and(|v| v.focus.is_some()),
+            pages: view.map_or(0, |v| v.model.pages.len()),
+            test_rows: view.map_or(0, |v| v.model.runs.iter().map(|r| r.tests.len()).sum()),
+            compare_lanes: view
+                .and_then(|v| v.focus.as_ref())
+                .and_then(|f| f.compare.as_ref())
+                .map_or(0, Vec::len),
+        }
     }
 
     fn focused_view(&self) -> Option<Which> {
@@ -635,6 +699,7 @@ fn tooltip_text(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App)
 
 impl Render for TestudoApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let frame_start = self.perf.frame_start();
         // Free GPU atlas entries for frames replaced since the last render.
         for image in self.retired.drain(..) {
             let _ = window.drop_image(image);
@@ -653,6 +718,12 @@ impl Render for TestudoApp {
             Mode::Live => self.render_live(window, cx).into_any_element(),
             Mode::History => self.render_history(window, cx).into_any_element(),
         };
+        #[cfg(debug_assertions)]
+        self.debug_autoscroll(window);
+        let ctx = self.frame_ctx();
+        if self.perf.frame_end(frame_start, ctx) {
+            window.request_animation_frame();
+        }
         v_flex()
             .id("testudo")
             .size_full()
@@ -694,6 +765,7 @@ impl TestudoApp {
                     .ghost()
                     .selected(mode == Mode::Live)
                     .on_click(cx.listener(|this, _, _, cx| {
+                        let _span = tracing::info_span!("switch_mode", to = "live").entered();
                         this.mode = Mode::Live;
                         cx.notify();
                     })),
@@ -705,6 +777,7 @@ impl TestudoApp {
                     .ghost()
                     .selected(mode == Mode::History)
                     .on_click(cx.listener(|this, _, _, cx| {
+                        let _span = tracing::info_span!("switch_mode", to = "history").entered();
                         this.refresh_history();
                         this.mode = Mode::History;
                         cx.notify();
@@ -747,19 +820,25 @@ impl TestudoApp {
     // --- live ---------------------------------------------------------------
 
     fn render_live(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Suites scroll on their own; the run list is virtualized below them.
         let sidebar = v_flex()
-            .id("live-sidebar")
             .size_full()
-            .overflow_y_scroll()
             .p_2()
             .gap_1()
-            .child(self.render_suites(cx))
+            .child(
+                div()
+                    .id("live-suites")
+                    .flex_none()
+                    .max_h(relative(0.45))
+                    .overflow_y_scroll()
+                    .child(self.render_suites(cx)),
+            )
             .child(div().h(px(1.)).bg(cx.theme().border).my_1())
             .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child("Runs"))
             .when(self.live.model.runs.is_empty(), |d| {
                 d.child(div().text_sm().text_color(cx.theme().muted_foreground).child("No runs yet. Press ▶ on a suite."))
             })
-            .child(self.render_runs(Which::Live, cx));
+            .child(self.run_list(Which::Live, cx));
 
         h_resizable("live-main")
             .child(resizable_panel().size(px(330.)).size_range(px(220.)..px(700.)).child(sidebar))
@@ -836,94 +915,183 @@ impl TestudoApp {
         col
     }
 
-    fn render_runs(&mut self, w: Which, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The run list: every run's header, counts and tests, flattened into
+    /// fixed-height rows and virtualized, so only visible rows are built and
+    /// laid out (a 600-test Vitest run otherwise costs ~200 ms per frame).
+    fn run_list(&mut self, w: Which, cx: &mut Context<Self>) -> AnyElement {
+        let Some(view) = self.view(w) else { return div().into_any_element() };
+        let rows = Rc::new(run_rows(view));
+        let list = uniform_list(
+            ("runs", w as usize),
+            rows.len(),
+            cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                range.map(|i| this.render_run_row(w, &rows[i], cx)).collect::<Vec<_>>()
+            }),
+        )
+        .track_scroll(&self.run_scroll)
+        .size_full();
+        let errors = self.error_panel(w, cx);
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .gap_1()
+            .child(
+                div()
+                    .id(("run-list", w as usize))
+                    .flex_1()
+                    .min_h_0()
+                    .on_scroll(cx.listener(|this, _: &ScrollEvent, _, _| this.perf.input("run_list")))
+                    .child(list),
+            )
+            .children(errors)
+            .into_any_element()
+    }
+
+    /// Full errors of the tests opened from the run list, wrapped and
+    /// scrollable (list rows are one line each).
+    fn error_panel(&mut self, w: Which, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = cx.theme().clone();
+        let view = self.view(w)?;
+        let open: Vec<(String, String, String)> = view
+            .model
+            .runs
+            .iter()
+            .rev()
+            .flat_map(|r| r.tests.iter())
+            .filter(|t| view.expanded_tests.contains(&t.id))
+            .filter_map(|t| Some((t.id.clone(), t.title.clone(), truncate(t.error.as_deref()?, MAX_ERROR_CHARS))))
+            .collect();
+        if open.is_empty() {
+            return None;
+        }
+        let mut panel = v_flex()
+            .id(("error-panel", w as usize))
+            .flex_none()
+            .max_h(relative(0.5))
+            .overflow_y_scroll()
+            .gap_2()
+            .p_2()
+            .rounded_md()
+            .bg(theme.red.opacity(0.06))
+            .border_1()
+            .border_color(theme.red.opacity(0.4));
+        for (i, (id, title, error)) in open.into_iter().enumerate() {
+            panel = panel.child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(div().flex_1().min_w_0().truncate().text_sm().font_weight(FontWeight::SEMIBOLD).child(title))
+                            .child(
+                                Button::new(("close-error", i))
+                                    .label("✕")
+                                    .xsmall()
+                                    .ghost()
+                                    .tooltip("Close")
+                                    .on_click(cx.listener(toggle_error(w, id))),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .font_family(crate::fonts::mono())
+                            .text_xs()
+                            .text_color(theme.red)
+                            .whitespace_normal()
+                            .child(error),
+                    ),
+            );
+        }
+        Some(panel.into_any_element())
+    }
+
+    fn render_run_row(&mut self, w: Which, row: &ListRow, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
-        let Some(view) = self.view(w) else { return v_flex() };
-        let mut col = v_flex().gap_1();
-        for (ri, run) in view.model.runs.iter().enumerate().rev() {
-            let (passed, failed, running) = run.counts();
-            let (status, tn) = match (&run.exit, run.run_end.as_deref()) {
-                (None, _) => ("Running".to_owned(), Tone::Running),
-                (Some(_), Some("passed")) | (Some(Some(0)), _) => ("Passed".to_owned(), Tone::Passed),
-                (Some(_), Some("interrupted")) => ("Interrupted".to_owned(), Tone::Warn),
-                (Some(Some(code)), _) => (format!("Failed · exit {code}"), Tone::Failed),
-                (Some(None), _) => ("Killed".to_owned(), Tone::Failed),
-            };
-            let selected = view.selected_run.as_deref() == Some(&run.id);
-            let run_id = run.id.clone();
-            let mut header = h_flex()
-                .gap_2()
-                .items_center()
-                .child(
-                    div()
-                        .id(("run", ri))
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .px_1()
-                        .rounded_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .cursor_pointer()
-                        .when(selected, |d| d.bg(theme.list_active))
-                        .hover(|d| d.bg(theme.list_hover))
-                        .child(run.label.clone())
-                        .tooltip(tooltip_text("show this run's output"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(v) = this.view_mut(w) {
-                                v.selected_run = Some(run_id.clone());
-                                v.inspector_tab = InspectorTab::Output;
-                            }
-                            cx.notify();
-                        })),
-                )
-                .child(pill(status, tone(tn, cx)));
-            if w == Which::Live {
-                if run.is_running() && self.handles.contains_key(&run.id) {
-                    let id = run.id.clone();
-                    header = header.child(
-                        Button::new(("stop", ri))
-                            .label("Stop")
-                            .xsmall()
-                            .ghost()
+        let Some(view) = self.view(w) else { return div().into_any_element() };
+        let line = || div().w_full().h(px(RUN_ROW_H)).flex().items_center().overflow_hidden();
+        match *row {
+            ListRow::Gap => line().child(div().w_full().h(px(1.)).bg(theme.border)).into_any_element(),
+            ListRow::Header(ri) => {
+                let Some(run) = view.model.runs.get(ri) else { return line().into_any_element() };
+                let (status, tn) = match (&run.exit, run.run_end.as_deref()) {
+                    (None, _) => ("Running".to_owned(), Tone::Running),
+                    (Some(_), Some("passed")) | (Some(Some(0)), _) => ("Passed".to_owned(), Tone::Passed),
+                    (Some(_), Some("interrupted")) => ("Interrupted".to_owned(), Tone::Warn),
+                    (Some(Some(code)), _) => (format!("Failed · exit {code}"), Tone::Failed),
+                    (Some(None), _) => ("Killed".to_owned(), Tone::Failed),
+                };
+                let selected = view.selected_run.as_deref() == Some(&run.id);
+                let run_id = run.id.clone();
+                let mut header = line()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id(("run", ri))
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .px_1()
+                            .rounded_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .cursor_pointer()
+                            .when(selected, |d| d.bg(theme.list_active))
+                            .hover(|d| d.bg(theme.list_hover))
+                            .child(run.label.clone())
+                            .tooltip(tooltip_text("show this run's output"))
                             .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(v) = this.view_mut(w) {
+                                    v.selected_run = Some(run_id.clone());
+                                    v.inspector_tab = InspectorTab::Output;
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(pill(status, tone(tn, cx)));
+                if w == Which::Live {
+                    if run.is_running() && self.handles.contains_key(&run.id) {
+                        let id = run.id.clone();
+                        header = header.child(Button::new(("stop", ri)).label("Stop").xsmall().ghost().on_click(
+                            cx.listener(move |this, _, _, cx| {
                                 if let Some(h) = this.handles.get(&id) {
                                     h.cancel();
                                 }
                                 cx.notify();
-                            })),
-                    );
-                } else if !run.is_running() && self.store.is_some() {
-                    let id = run.id.clone();
-                    header = header.child(
-                        Button::new(("replay", ri))
-                            .label("Replay")
-                            .xsmall()
-                            .ghost()
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                            }),
+                        ));
+                    } else if !run.is_running() && self.store.is_some() {
+                        let id = run.id.clone();
+                        header = header.child(Button::new(("replay", ri)).label("Replay").xsmall().ghost().on_click(
+                            cx.listener(move |this, _, _, cx| {
                                 this.open_replay(&id);
                                 cx.notify();
-                            })),
-                    );
+                            }),
+                        ));
+                    }
                 }
+                header.into_any_element()
             }
-            let total = run.total_tests.map(|t| format!(" of {t}")).unwrap_or_default();
-            let counts = h_flex()
-                .gap_1()
-                .items_center()
-                .when(passed > 0, |d| d.child(pill(format!("✔ {passed}"), theme.green)))
-                .when(failed > 0, |d| d.child(pill(format!("✘ {failed}"), theme.red)))
-                .when(running > 0, |d| d.child(pill(format!("⏳ {running}"), theme.blue)))
-                .child(div().text_xs().text_color(muted).child(format!("{}{total} tests", run.tests.len())));
-            col = col.child(header).child(counts);
-
-            // Duration bars are relative to the slowest test in the run.
-            let slowest = run.tests.iter().filter_map(|t| t.duration_ms).fold(1.0_f64, f64::max);
-            let mut tests = v_flex().pt_1();
-            for (ti, t) in run.tests.iter().enumerate() {
+            ListRow::Counts(ri) => {
+                let Some(run) = view.model.runs.get(ri) else { return line().into_any_element() };
+                let (passed, failed, running) = run.counts();
+                let total = run.total_tests.map(|t| format!(" of {t}")).unwrap_or_default();
+                line()
+                    .gap_1()
+                    .when(passed > 0, |d| d.child(pill(format!("✔ {passed}"), theme.green)))
+                    .when(failed > 0, |d| d.child(pill(format!("✘ {failed}"), theme.red)))
+                    .when(running > 0, |d| d.child(pill(format!("⏳ {running}"), theme.blue)))
+                    .child(div().text_xs().text_color(muted).child(format!("{}{total} tests", run.tests.len())))
+                    .into_any_element()
+            }
+            ListRow::Test(ri, ti) => {
+                let Some(run) = view.model.runs.get(ri) else { return line().into_any_element() };
+                let Some(t) = run.tests.get(ti) else { return line().into_any_element() };
+                // Duration bars are relative to the slowest test in the run.
+                let slowest = run.tests.iter().filter_map(|t| t.duration_ms).fold(1.0_f64, f64::max);
                 let (icon, tn) = status_icon(t.status);
-                let failing = t.error.is_some();
-                let expanded = failing && view.expanded_tests.contains(&t.id);
+                let bar = t.duration_ms.map(|d| (d / slowest).clamp(0.02, 1.0) as f32);
+                let bar_color = if matches!(tn, Tone::Failed) { theme.red } else { muted };
                 let store = self.store.clone();
                 let detail = {
                     let mut lines = vec![t.title_path.join(" › ")];
@@ -934,12 +1102,15 @@ impl TestudoApp {
                 };
                 let file = t.file.clone();
                 let title_path = t.title_path.clone();
+                let failing = t.error.is_some();
                 let test_id = t.id.clone();
-                let bar = t.duration_ms.map(|d| (d / slowest).clamp(0.02, 1.0) as f32);
-                let bar_color = if matches!(tn, Tone::Failed) { theme.red } else { muted };
-                let row = h_flex()
+                line()
+                    .id(("test", ri * 100_000 + ti))
                     .gap_2()
-                    .items_center()
+                    .px_1()
+                    .rounded_sm()
+                    .hover(|d| d.bg(theme.list_hover))
+                    .when(failing, |d| d.cursor_pointer().on_click(cx.listener(toggle_error(w, test_id))))
                     .child(div().w(px(14.)).flex_none().text_xs().text_color(tone(tn, cx)).child(icon))
                     .child(div().flex_1().min_w_0().truncate().text_sm().child(t.title.clone()))
                     .child(
@@ -960,90 +1131,58 @@ impl TestudoApp {
                             .text_xs()
                             .text_color(muted)
                             .child(t.duration_ms.map(fmt_dur).unwrap_or_default()),
-                    );
-                let error_first = t
-                    .error
-                    .as_deref()
-                    .and_then(|e| e.lines().map(str::trim).find(|l| !l.is_empty()))
-                    .map(str::to_owned);
-                tests = tests.child(
-                    v_flex()
-                        .id(("test", ri * 100_000 + ti))
-                        .px_1()
-                        .py_px()
-                        .rounded_sm()
-                        .hover(|d| d.bg(theme.list_hover))
-                        .when(failing, |d| d.cursor_pointer())
-                        .child(row)
-                        .children(t.current_step.clone().map(|s| {
-                            div().pl(px(22.)).text_xs().text_color(muted).truncate().child(format!("↳ {s}"))
-                        }))
-                        .when_some(
-                            t.note.clone().filter(|_| t.status == Some(testudo_protocol::TestStatus::Skipped)),
-                            |d, note| {
-                                d.child(div().pl(px(22.)).text_xs().text_color(muted).truncate().child(format!("skipped: {}", summary_line(&note))))
-                            },
-                        )
-                        // Failing tests show their error inline (first line; click for all).
-                        .when_some(error_first.filter(|_| !expanded), |d, first| {
-                            d.child(div().pl(px(22.)).text_xs().text_color(theme.red).truncate().child(first))
-                        })
-                        .when(expanded, |d| {
-                            d.child(
-                                div()
-                                    .ml(px(22.))
-                                    .mt_1()
-                                    .p_2()
-                                    .rounded_sm()
-                                    .bg(theme.red.opacity(0.08))
-                                    .border_l_2()
-                                    .border_color(theme.red)
-                                    .font_family(crate::fonts::mono())
-                                    .text_xs()
-                                    .text_color(theme.red)
-                                    .child(truncate(t.error.as_deref().unwrap_or_default(), 4000)),
-                            )
-                        })
-                        .when(failing, |d| {
-                            d.on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(v) = this.view_mut(w)
-                                    && !v.expanded_tests.remove(&test_id)
-                                {
-                                    v.expanded_tests.insert(test_id.clone());
-                                }
-                                cx.notify();
-                            }))
-                        })
-                        // Built only when hovered, so history is queried lazily.
-                        .tooltip(move |window, cx| {
-                            let mut text = detail.clone();
-                            if let (Some(store), Some(file)) = (&store, &file)
-                                && let Ok(history) = store.test_history(file, &title_path, 20)
-                                && !history.is_empty()
-                            {
-                                let strip: String = history
-                                    .iter()
-                                    .rev()
-                                    .map(|h| match h.status.as_deref() {
-                                        Some("passed") => '✔',
-                                        Some("failed" | "timedOut") => '✘',
-                                        Some("interrupted") => '⏹',
-                                        Some("skipped") => '⊘',
-                                        _ => '·',
-                                    })
-                                    .collect();
-                                text.push_str(&format!("\n\nlast {} runs (oldest → newest): {strip}", history.len()));
-                                if strip.contains('✔') && strip.contains('✘') {
-                                    text.push_str("\nflaky: both passes and failures in recent history");
-                                }
+                    )
+                    // Built only when hovered, so history is queried lazily.
+                    .tooltip(move |window, cx| {
+                        let mut text = detail.clone();
+                        if let (Some(store), Some(file)) = (&store, &file)
+                            && let Ok(history) = store.test_history(file, &title_path, 20)
+                            && !history.is_empty()
+                        {
+                            let strip: String = history
+                                .iter()
+                                .rev()
+                                .map(|h| match h.status.as_deref() {
+                                    Some("passed") => '✔',
+                                    Some("failed" | "timedOut") => '✘',
+                                    Some("interrupted") => '⏹',
+                                    Some("skipped") => '⊘',
+                                    _ => '·',
+                                })
+                                .collect();
+                            text.push_str(&format!("\n\nlast {} runs (oldest → newest): {strip}", history.len()));
+                            if strip.contains('✔') && strip.contains('✘') {
+                                text.push_str("\nflaky: both passes and failures in recent history");
                             }
-                            Tooltip::new(text).build(window, cx)
-                        }),
-                );
+                        }
+                        Tooltip::new(text).build(window, cx)
+                    })
+                    .into_any_element()
             }
-            col = col.child(tests).child(div().h(px(1.)).bg(theme.border).my_2());
+            ListRow::Note(ri, ti, kind) => {
+                let Some(t) = view.model.runs.get(ri).and_then(|r| r.tests.get(ti)) else {
+                    return line().into_any_element();
+                };
+                let (text, color) = match kind {
+                    NoteKind::Step => (format!("↳ {}", t.current_step.as_deref().unwrap_or_default()), muted),
+                    NoteKind::Skip => (format!("skipped: {}", summary_line(t.note.as_deref().unwrap_or_default())), muted),
+                    // Failing tests show their error's first line; click for all.
+                    NoteKind::Error => {
+                        let open = if view.expanded_tests.contains(&t.id) { "▾" } else { "▸" };
+                        (format!("{open} {}", summary_line(t.error.as_deref().unwrap_or_default())), theme.red)
+                    }
+                };
+                let test_id = t.id.clone();
+                line()
+                    .id(("note", ri * 100_000 + ti))
+                    .pl(px(26.))
+                    .text_xs()
+                    .text_color(color)
+                    .when(kind == NoteKind::Error, |d| d.cursor_pointer().on_click(cx.listener(toggle_error(w, test_id))))
+                    .child(div().min_w_0().truncate().child(text))
+                    .into_any_element()
+            }
         }
-        col
     }
 
     // --- pages ----------------------------------------------------------------
@@ -1566,10 +1705,18 @@ impl TestudoApp {
             )
             .children(self.store.as_ref().map(|s| div().text_xs().text_color(muted).truncate().child(s.dir().display().to_string())))
             .child(self.render_history_summary(cx))
-            .child(div().id("hist-list").flex_1().min_h_0().overflow_y_scroll().child(list))
+            .child(
+                div()
+                    .id("hist-list")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .on_scroll(cx.listener(|this, _: &ScrollEvent, _, _| this.perf.input("history_list")))
+                    .child(list),
+            )
             .when(self.replay.is_some(), |d| {
                 d.child(div().h(px(1.)).bg(cx.theme().border))
-                    .child(div().id("replay-tests").flex_1().min_h_0().overflow_y_scroll().child(self.render_runs(Which::Replay, cx)))
+                    .child(self.run_list(Which::Replay, cx))
             });
 
         let replay_focus = self.replay.as_ref().is_some_and(|r| r.view.focus.is_some());
@@ -1871,3 +2018,62 @@ impl TestudoApp {
         cx.notify();
     }
 }
+
+/// Height of every row in the run list (uniform, for virtualization).
+const RUN_ROW_H: f32 = 24.;
+/// Characters of an error shown in the error panel.
+const MAX_ERROR_CHARS: usize = 20_000;
+
+/// One row of the run list.
+#[derive(Clone, Copy)]
+enum ListRow {
+    Header(usize),
+    Counts(usize),
+    Test(usize, usize),
+    Note(usize, usize, NoteKind),
+    Gap,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NoteKind {
+    Step,
+    Skip,
+    Error,
+}
+
+/// Runs newest first; each test followed by its notes (current step, skip
+/// reason, first error line). Whole errors open in the panel under the list.
+fn run_rows(view: &PagesView) -> Vec<ListRow> {
+    let mut rows = Vec::new();
+    for (ri, run) in view.model.runs.iter().enumerate().rev() {
+        rows.push(ListRow::Header(ri));
+        rows.push(ListRow::Counts(ri));
+        for (ti, t) in run.tests.iter().enumerate() {
+            rows.push(ListRow::Test(ri, ti));
+            if t.current_step.is_some() {
+                rows.push(ListRow::Note(ri, ti, NoteKind::Step));
+            }
+            if t.status == Some(testudo_protocol::TestStatus::Skipped) && t.note.is_some() {
+                rows.push(ListRow::Note(ri, ti, NoteKind::Skip));
+            }
+            if t.error.is_some() {
+                rows.push(ListRow::Note(ri, ti, NoteKind::Error));
+            }
+        }
+        rows.push(ListRow::Gap);
+    }
+    rows
+}
+
+/// Click handler: expand or collapse a failing test's error.
+fn toggle_error(w: Which, test_id: String) -> impl Fn(&mut TestudoApp, &ClickEvent, &mut Window, &mut Context<TestudoApp>) {
+    move |this, _, _, cx| {
+        if let Some(v) = this.view_mut(w)
+            && !v.expanded_tests.remove(&test_id)
+        {
+            v.expanded_tests.insert(test_id.clone());
+        }
+        cx.notify();
+    }
+}
+

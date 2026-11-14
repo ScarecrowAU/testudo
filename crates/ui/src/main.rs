@@ -3,6 +3,7 @@ mod bridge;
 mod fonts;
 mod logic;
 mod model;
+mod perf;
 mod state;
 mod telemetry;
 

@@ -390,6 +390,7 @@ impl TestudoApp {
                 )
             })
             .on_scroll(cx.listener(move |this, e: &ScrollEvent, _, cx| {
+                this.perf.input("focus_frame");
                 let d = e.delta.pixel_delta(px(20.));
                 let d = f32::from(d.y) + f32::from(d.x);
                 let shift = e.modifiers.shift;
@@ -954,6 +955,7 @@ impl TestudoApp {
     }
 
     pub(super) fn scrub_focus(&mut self, w: Which, x: Pixels, cx: &mut Context<Self>) {
+        self.perf.input("focus_timeline");
         let b = self.focus_scrub.get();
         let frac = (f32::from(x - b.left()) / f32::from(b.size.width).max(1.0)).clamp(0.0, 1.0) as f64;
         self.with_focus(w, |f, page, _, _| {

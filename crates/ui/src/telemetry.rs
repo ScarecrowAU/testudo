@@ -108,6 +108,8 @@ pub fn init() -> Telemetry {
             let logs = logger
                 .as_ref()
                 .map(|l| OpenTelemetryTracingBridge::new(l).with_filter(otlp_filter()));
+            // For spans recorded after the fact (perf.rs).
+            opentelemetry::global::set_tracer_provider(tracer.clone());
             out.tracer = Some(tracer);
             out.logger = logger;
             out.otlp_endpoint = endpoint;
