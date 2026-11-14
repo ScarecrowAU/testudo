@@ -30,9 +30,9 @@ Native GUI test runner that controls, monitors and reports on multiple concurren
 
 ![Focus view: one recorded page with a timeline scrubber and its test steps](docs/screenshots/focus.png)
 
-**Compare with earlier runs** of the same test, played side by side in step; arrows move through the test's history:
+**Compare with earlier runs** of the same test, played side by side in step; − / + choose how many (up to 4) and ‹ › move through the test's history:
 
-![Comparison: this run and an earlier run of the same test, aligned by step](docs/screenshots/compare.png)
+![Comparison: this run and three earlier runs of the same test in a grid, aligned by step](docs/screenshots/compare.png)
 
 **History** of every run, with pass rate, flaky tests and a timeline you can replay:
 
