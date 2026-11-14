@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-24.04
+          - name: macOS
+            os: macos-15
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # gpui's Linux backends (Wayland, X11, fonts) link against these.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libfontconfig-dev libfreetype-dev \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-xcb-dev libxcb1-dev libvulkan-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Release profile so a tag's binary build below reuses this compile.
+      - name: Test
+        run: cargo test --workspace --locked --release
+
+      - name: Build release binaries
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: make build
+
+      # Portable layout: the binaries find adapters/ next to themselves.
+      - name: Package
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          name=testudo-${GITHUB_REF_NAME}-$(uname -s | tr A-Z a-z)-$(uname -m)
+          mkdir -p "dist/$name/adapters"
+          cp target/release/testudo target/release/testudo-cli README.md "dist/$name/"
+          cp adapters/js/*.mjs adapters/js/package.json "dist/$name/adapters/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+
+      - uses: actions/upload-artifact@v7
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: testudo-${{ runner.os }}
+          path: dist/*.tar.gz
+
+  release:
+    name: GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.tar.gz --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
