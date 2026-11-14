@@ -4,18 +4,23 @@ Native GUI test runner that controls, monitors and reports on multiple concurren
 
 ## Compatibility
 
-| Test system | Status | Found by | Results & steps | Live browser view & recording | Re-run one test | Tested with |
-|---|---|---|---|---|---|---|
-| [Playwright Test](https://playwright.dev) | ✅ Supported | `playwright.config.*` | ✅ tests, steps, skip reasons, pending tests | ✅ every page | ✅ `file:line` + `--project` | 1.60, 1.64 |
-| [Vitest](https://vitest.dev) (3+) | ✅ Supported | `vitest.config.*`, workspaces, `vite.config.*` with `test` | ✅ tests, skip reasons, pending tests | ✅ browser mode (Playwright provider) | ✅ `file:line` | 4.1 |
-| [Storybook](https://storybook.js.org) | ✅ Supported, via Vitest or Playwright | as above | ✅ | ✅ | ✅ | `addon-vitest`; Playwright-based story suites |
-| [Jest](https://jestjs.io) | 🗓️ Planned | | | (no browser) | | |
-| [Bun](https://bun.sh/docs/cli/test) (`bun test`) | 🗓️ Planned | | | (no browser) | | |
-| [Rstest](https://rstest.rs) | 🗓️ Planned | | | | | |
-| Go (`go test`) | 🗓️ Planned | `go.mod` (listed, not runnable yet) | | (no browser) | | |
-| Rust (`cargo test`) | 🗓️ Planned | | | (no browser) | | |
+| Test system | Status | Live browser view | Re-run one test | Tested with |
+|---|---|:---:|:---:|---|
+| [Playwright Test](https://playwright.dev) | ✅ Supported | ✅ | ✅ | 1.60, 1.64 |
+| [Vitest](https://vitest.dev) 3+ | ✅ Supported | ✅ ¹ | ✅ | 4.1 |
+| [Storybook](https://storybook.js.org) | ✅ Supported ² | ✅ | ✅ | addon-vitest |
+| [Jest](https://jestjs.io) | 🗓️ Planned | — | | |
+| [Bun](https://bun.sh/docs/cli/test) | 🗓️ Planned | — | | |
+| [Rstest](https://rstest.rs) | 🗓️ Planned | | | |
+| Go | 🗓️ Planned ³ | — | | |
+| Rust | 🗓️ Planned | — | | |
 
-Live views need a browser to drive: Playwright pages and Vitest browser mode. Chromium is captured on every supported Playwright version; Firefox and WebKit only where Playwright has its cross-browser `page.screencast` API (recent versions, not yet tested). Each suite uses the runner version installed in its own project, so a monorepo can mix versions.
+¹ In browser mode (Playwright provider). ² Through its Vitest addon or a Playwright story suite. ³ Already found by Scan, not runnable yet. — means the runner drives no browser.
+
+- **Found by**: `playwright.config.*`; `vitest.config.*`, Vitest workspaces and `vite.config.*` with a `test` block; `go.mod`. Each suite uses the runner version installed in its own project, so a monorepo can mix versions.
+- **Results**: tests, steps (Playwright), skip reasons and tests not started yet, live and in History.
+- **Re-run one test**: `file:line`, plus `--project` for Playwright.
+- **Browsers**: Chromium is captured on every supported Playwright version; Firefox and WebKit only where Playwright has its cross-browser `page.screencast` API (recent versions, not yet tested).
 
 ## How it works
 
