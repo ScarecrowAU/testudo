@@ -1,0 +1,64 @@
+name: Bug report
+description: Something in Testudo doesn't work as expected.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: A small public repo or the relevant test config helps most.
+      placeholder: |
+        1. Open ~/dev/my-app
+        2. Start the Playwright suite
+        3. Click a running page
+    validations:
+      required: true
+  - type: dropdown
+    id: runner
+    attributes:
+      label: Test runner
+      multiple: true
+      options:
+        - Playwright
+        - Vitest
+        - Storybook
+        - Other / not runner-specific
+    validations:
+      required: true
+  - type: input
+    id: runner-version
+    attributes:
+      label: Runner and Node versions
+      placeholder: "Playwright 1.64, Node 22.11"
+  - type: input
+    id: testudo-version
+    attributes:
+      label: Testudo version
+      description: Release tag, or `git rev-parse --short HEAD` for a source build.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Fedora 43 (KDE, Wayland) / macOS 26"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Terminal output, or `target/dev/testudo.log` under `make dev`.
+      render: shell
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: Drag images here if the problem is visual.
