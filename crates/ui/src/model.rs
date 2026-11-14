@@ -33,6 +33,10 @@ pub struct Run {
     pub started_at: f64,
     /// Runner output and adapter notes, in arrival order.
     pub output: Vec<OutputLine>,
+    /// Runner name ("playwright", "vitest") and project directory, from
+    /// RunStarted: enough to find the suite again to re-run a test.
+    pub runner: String,
+    pub cwd: String,
 }
 
 impl Run {
@@ -97,6 +101,8 @@ pub struct Test {
     pub title_path: Vec<String>,
     pub file: Option<String>,
     pub line: Option<u32>,
+    /// Playwright project the test ran under.
+    pub project: Option<String>,
     pub status: Option<TestStatus>,
     pub duration_ms: Option<f64>,
     pub error: Option<String>,
@@ -181,6 +187,8 @@ impl Model {
             tests: Vec::new(),
             started_at: at,
             output: Vec::new(),
+            runner: String::new(),
+            cwd: String::new(),
         });
         self.runs.last_mut().unwrap()
     }
@@ -316,6 +324,7 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
             title_path,
             file,
             line,
+            project,
             ..
         } => {
             // Retries reuse the test id: reset in place.
@@ -333,6 +342,7 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
                     title_path,
                     file,
                     line,
+                    project,
                     status: None,
                     duration_ms: None,
                     error: None,
@@ -404,7 +414,11 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
             let text = format!("[{level}] {message}");
             push_capped(&mut run.output, OutputLine { at, source: Source::Adapter, text }, MAX_LINES)
         }
-        Event::RunStarted { label, .. } => run.label = label,
+        Event::RunStarted { label, runner, cwd, .. } => {
+            run.label = label;
+            run.runner = runner;
+            run.cwd = cwd;
+        }
         Event::ProcessExited { code } => run.exit = Some(code),
         Event::Hello { .. } => {}
         // Page-scoped events are handled by the caller.

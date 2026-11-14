@@ -104,6 +104,14 @@ impl TestudoApp {
         let hover_label = focus.hover_label.clone().unwrap_or_default();
         // Earlier runs of this test beside the frame: (label, status, image).
         let by_step = focus.compare_by_step;
+        // Re-running needs the test's location and a runner that filters by it.
+        let rerun_blocker: Option<&'static str> = match (test, model.run(&page.key.run_id)) {
+            (None, _) => Some("This page isn't tied to a test"),
+            (Some(t), _) if t.file.is_none() || t.line.is_none() => Some("The runner didn't report this test's location"),
+            (_, Some(r)) if !matches!(r.runner.as_str(), "playwright" | "vitest") => Some("Only Playwright and Vitest tests can be re-run"),
+            (_, None) => Some("Run not found"),
+            _ => None,
+        };
         let compare_target = test.and_then(|t| t.file.clone().map(|f| (f, t.title_path.clone())));
         let now = now_ms();
         let compared: Option<Vec<ComparedCell>> = focus.compare.as_ref().map(|lanes| {
@@ -274,6 +282,16 @@ impl TestudoApp {
                             .child(l)
                     }))
                     .child(div().flex_1())
+                    .child(
+                        Button::new("f-rerun")
+                            .icon(media_icon("rotate-ccw"))
+                            .label("Re-run test")
+                            .xsmall()
+                            .outline()
+                            .disabled(rerun_blocker.is_some())
+                            .tooltip(rerun_blocker.unwrap_or("Run just this test again and watch it live"))
+                            .on_click(cx.listener(move |this, _, _, cx| this.rerun_test(w, cx))),
+                    )
                     .when(self.store.is_some() && compare_target.is_some(), |row| {
                         let comparing = compared.is_some();
                         let align = |id: &'static str, label: &'static str, step: bool, tip: &'static str| {

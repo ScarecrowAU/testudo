@@ -26,7 +26,7 @@ use testudo_protocol::Event;
 use testudo_store::{RunRow, Store};
 
 use crate::bridge::UiMsg;
-use crate::logic::{
+use crate::logic::{rerun_args, 
     REPEAT_THRESHOLD, RowState, Tone, expand_tilde, fmt_ago, fmt_dur, fmt_secs, fmt_time, status_label, summary_line,
     url_path, looks_like_failure, ordered_pages, pane_name,
     row_state, status_icon, truncate,
@@ -96,6 +96,8 @@ pub struct TestudoApp {
 
     live: PagesView,
     handles: HashMap<RunId, RunHandle>,
+    /// A run started by "Re-run test": its first page opens in the focus view.
+    follow_run: Option<RunId>,
     /// Runs from a project we switched away from: still shutting down, their
     /// late events and frames are ignored (the recorder still keeps them).
     dropped_runs: std::collections::HashSet<RunId>,
@@ -200,6 +202,7 @@ impl TestudoApp {
             live: PagesView::new(),
             handles: HashMap::new(),
             dropped_runs: Default::default(),
+            follow_run: None,
             history: Vec::new(),
             flaky: Vec::new(),
             replay: None,
@@ -279,6 +282,11 @@ impl TestudoApp {
                 }
                 window.focus(&app.focus_handle, cx);
             }
+            // Test hook (debug builds only): press "Re-run test" in that focus.
+            #[cfg(debug_assertions)]
+            if s.focus_page.is_some() && std::env::var_os("TESTUDO_DEBUG_RERUN").is_some() {
+                app.rerun_test(Which::Replay, cx);
+            }
         }
         #[cfg(debug_assertions)]
         if std::env::var_os("TESTUDO_DEBUG_OPEN_PICKER").is_some() {
@@ -330,7 +338,17 @@ impl TestudoApp {
                 if matches!(event, Event::RunStarted { .. }) {
                     self.live.drop_finished_run_pages(&mut self.retired);
                 }
+                let follow = match &event {
+                    Event::PageOpened { page_id, .. } if self.follow_run.as_deref() == Some(run_id.as_str()) => {
+                        Some(page_id.clone())
+                    }
+                    _ => None,
+                };
                 self.live.apply(&run_id, at, event);
+                if let Some(page_id) = follow {
+                    self.follow_run = None;
+                    self.open_live_focus(PageKey { run_id: run_id.clone(), page_id });
+                }
                 // Test hook (debug builds only): focus the first page that opens.
                 #[cfg(debug_assertions)]
                 if let Some(page_id) = opened
@@ -419,6 +437,67 @@ impl TestudoApp {
             Ok(handle) => {
                 self.live.selected_run = Some(handle.id.clone());
                 self.handles.insert(handle.id.clone(), handle);
+                self.mode = Mode::Live;
+                self.error = None;
+            }
+            Err(e) => self.error = Some(format!("{}: {e:#}", suite.name)),
+        }
+        cx.notify();
+    }
+
+    /// The suite and arguments to run just the focused page's test again, or
+    /// why that isn't possible. Looks for the suite among the scanned ones,
+    /// then in the run's own directory (a History run from another project).
+    fn rerun_target(&self, w: Which, cx: &App) -> Result<(Suite, Vec<String>), String> {
+        let view = self.view(w).ok_or("no view")?;
+        let focus = view.focus.as_ref().ok_or("no page open")?;
+        let model = focus.recorded.as_deref().unwrap_or(&view.model);
+        let page = model.pages.get(&focus.key).ok_or("page not found")?;
+        let test = model.test_for_page(page).ok_or("this page isn't tied to a test")?;
+        let run = model.run(&page.key.run_id).ok_or("run not found")?;
+        let (Some(file), Some(line)) = (&test.file, test.line) else {
+            return Err("the runner didn't report this test's location".into());
+        };
+        let mut args = rerun_args(&run.runner, &run.cwd, file, line, test.project.as_deref())
+            .ok_or_else(|| format!("re-running single tests isn't supported for {}", run.runner))?;
+        let same_dir = |a: &std::path::Path| {
+            a.canonicalize().ok().zip(std::path::Path::new(&run.cwd).canonicalize().ok()).is_some_and(|(a, b)| a == b)
+        };
+        let matches = |s: &Suite| s.kind.runner().is_some_and(|k| k.name() == run.runner) && same_dir(&s.dir);
+        let suite = self
+            .suites
+            .iter()
+            .find(|s| matches(s))
+            .cloned()
+            .or_else(|| discover(std::path::Path::new(&run.cwd)).into_iter().find(|s| matches(s)))
+            .ok_or_else(|| format!("no {} suite found in {}", run.runner, run.cwd))?;
+        let mut user: Vec<String> =
+            self.args_input.read(cx).value().split_whitespace().map(str::to_owned).collect();
+        user.append(&mut args);
+        Ok((suite, user))
+    }
+
+    /// Run the focused page's test again and watch it: switches to Live and
+    /// opens the new run's page in the focus view when it appears.
+    #[tracing::instrument(level = "info", skip_all, fields(view = ?w))]
+    fn rerun_test(&mut self, w: Which, cx: &mut Context<Self>) {
+        let (suite, args) = match self.rerun_target(w, cx) {
+            Ok(t) => t,
+            Err(e) => {
+                self.error = Some(format!("Can't re-run this test: {e}"));
+                cx.notify();
+                return;
+            }
+        };
+        let Some(spec) = RunSpec::for_suite(&suite, args) else { return };
+        match self.orchestrator.start(spec) {
+            Ok(handle) => {
+                self.follow_run = Some(handle.id.clone());
+                self.live.selected_run = Some(handle.id.clone());
+                self.handles.insert(handle.id.clone(), handle);
+                if self.live.focus.is_some() {
+                    self.close_focus(Which::Live);
+                }
                 self.mode = Mode::Live;
                 self.error = None;
             }

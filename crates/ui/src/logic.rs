@@ -176,6 +176,26 @@ pub fn align_by_step(
     Some(other.get(j + 1).map_or(at, |next| at.min(next.0 - 0.001)))
 }
 
+/// Runner arguments that select one test: `file:line` (relative to the
+/// project directory, as both CLIs document it) and, for Playwright, the
+/// project the test ran under. `None` when the runner can't filter that way.
+pub fn rerun_args(runner: &str, cwd: &str, file: &str, line: u32, project: Option<&str>) -> Option<Vec<String>> {
+    if !matches!(runner, "playwright" | "vitest") {
+        return None;
+    }
+    let rel = std::path::Path::new(file)
+        .strip_prefix(cwd)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| file.to_owned());
+    let mut args = vec![format!("{rel}:{line}")];
+    if runner == "playwright"
+        && let Some(p) = project.filter(|p| !p.is_empty())
+    {
+        args.push(format!("--project={p}"));
+    }
+    Some(args)
+}
+
 pub fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_owned()
@@ -295,6 +315,17 @@ mod tests {
         assert_eq!(align_by_step(&cur, &fast, 190.0, 0.0, 1000.0), Some(1149.999));
         // No matching step.
         assert_eq!(align_by_step(&cur, &steps(&[(1100.0, "goto")]), 150.0, 0.0, 1000.0), None);
+    }
+
+    #[test]
+    fn rerun_args_select_one_test() {
+        assert_eq!(
+            rerun_args("playwright", "/p/web", "/p/web/tests/a.spec.ts", 12, Some("chromium")),
+            Some(vec!["tests/a.spec.ts:12".to_owned(), "--project=chromium".to_owned()])
+        );
+        assert_eq!(rerun_args("vitest", "/p", "/p/src/x.test.ts", 3, Some("ignored")), Some(vec!["src/x.test.ts:3".to_owned()]));
+        assert_eq!(rerun_args("playwright", "/p", "/elsewhere/a.spec.ts", 1, None), Some(vec!["/elsewhere/a.spec.ts:1".to_owned()]));
+        assert_eq!(rerun_args("command", "/p", "/p/a", 1, None), None);
     }
 
     #[test]
