@@ -146,10 +146,20 @@ pub struct PruneReport {
     pub frame_bytes: u64,
 }
 
+/// Where recordings live: TESTUDO_DATA_DIR, else the settings'
+/// `recordings_dir`, else `$XDG_DATA_HOME/testudo` (`~/.local/share/testudo`).
 pub fn default_data_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("TESTUDO_DATA_DIR") {
         return PathBuf::from(d);
     }
+    if let Some(d) = testudo_core::settings::Settings::load().recordings_dir {
+        return d;
+    }
+    fallback_data_dir()
+}
+
+/// The data directory when no setting or override applies.
+pub fn fallback_data_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("XDG_DATA_HOME") {
         return PathBuf::from(d).join("testudo");
     }
@@ -381,6 +391,41 @@ impl Store {
             }
         }
         Ok(out)
+    }
+
+    /// (finished runs, bytes of recordings on disk).
+    pub fn usage(&self) -> Result<(u64, u64)> {
+        let runs: i64 = self.conn.query_row("SELECT COUNT(*) FROM runs WHERE status != 'running'", [], |r| r.get(0))?;
+        Ok((runs as u64, dir_size(&self.dir.join("runs"))))
+    }
+
+    /// Finished runs started before `before_ms` (or all of them).
+    pub fn count_runs(&self, before_ms: Option<f64>) -> Result<u64> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM runs WHERE status != 'running' AND started_at < ?1",
+            [before_ms.unwrap_or(f64::MAX)],
+            |r| r.get(0),
+        )?;
+        Ok(n as u64)
+    }
+
+    /// Delete finished runs (history and recordings) that started before
+    /// `before_ms`, or all of them. Runs still in progress are kept.
+    pub fn delete_runs(&self, before_ms: Option<f64>) -> Result<PruneReport> {
+        let ids: Vec<String> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id FROM runs WHERE status != 'running' AND started_at < ?1")?;
+            let rows = stmt.query_map([before_ms.unwrap_or(f64::MAX)], |r| r.get(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        let mut report = PruneReport::default();
+        for id in ids {
+            report.frame_bytes += dir_size(&run_dir(&self.dir, &id));
+            delete_run(&self.conn, &self.dir, &id)?;
+            report.runs_deleted += 1;
+        }
+        Ok(report)
     }
 
     pub fn delete_run(&self, run_id: &str) -> Result<()> {

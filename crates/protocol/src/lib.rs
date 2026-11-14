@@ -31,6 +31,8 @@ pub mod env {
     pub const PROJECT_ROOT: &str = "TESTUDO_PROJECT_ROOT";
     /// Recorded frames fit within this many pixels on each side.
     pub const FRAME_MAX: &str = "TESTUDO_FRAME_MAX";
+    /// At most this many recorded frames per second.
+    pub const FRAME_RATE: &str = "TESTUDO_FRAME_RATE";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

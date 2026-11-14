@@ -100,6 +100,7 @@ struct Inner {
     next_id: AtomicU64,
     /// Recording resolution for runs started from now on (settings).
     frame_max: std::sync::atomic::AtomicU32,
+    frame_rate: std::sync::atomic::AtomicU32,
     /// Runs whose process has not exited yet, with their cancel switch.
     active: Mutex<HashMap<RunId, Arc<watch::Sender<bool>>>>,
     run_exited: Notify,
@@ -116,15 +117,17 @@ impl Orchestrator {
                 connections: ingest.connections(),
                 next_id: AtomicU64::new(1),
                 frame_max: std::sync::atomic::AtomicU32::new(crate::settings::DEFAULT_FRAME_MAX),
+                frame_rate: std::sync::atomic::AtomicU32::new(crate::settings::DEFAULT_FRAME_RATE),
                 active: Mutex::new(HashMap::new()),
                 run_exited: Notify::new(),
             }),
         }
     }
 
-    /// Recording resolution for runs started after this call.
-    pub fn set_frame_max(&self, px: u32) {
-        self.inner.frame_max.store(px, Ordering::Relaxed);
+    /// Recording resolution and frame rate for runs started after this call.
+    pub fn set_recording(&self, settings: &crate::settings::Settings) {
+        self.inner.frame_max.store(settings.frame_max(), Ordering::Relaxed);
+        self.inner.frame_rate.store(settings.frame_rate(), Ordering::Relaxed);
     }
 
     pub fn active_runs(&self) -> usize {
@@ -228,6 +231,7 @@ impl Orchestrator {
             .env(env::RUN_ID, &id)
             .env(env::PROJECT_ROOT, &cwd)
             .env(env::FRAME_MAX, inner.frame_max.load(Ordering::Relaxed).to_string())
+            .env(env::FRAME_RATE, inner.frame_rate.load(Ordering::Relaxed).to_string())
             .env("FORCE_COLOR", "0")
             .env("PATH", &path_env)
             // Testudo's own telemetry settings are not for the test run.

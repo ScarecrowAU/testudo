@@ -280,3 +280,28 @@ fn prior_pages_finds_same_test_in_other_runs_with_frames() {
     assert_eq!(store.prior_pages("a.spec.ts", &["x".into()], "r3", 1).unwrap().len(), 1);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn delete_runs_by_age_keeps_recent_and_running_runs() {
+    let (dir, store) = temp_store("delete");
+    add_run(&store, "old", 1_000.0, 100);
+    add_run(&store, "new", 9_000.0, 100);
+    store
+        .conn
+        .execute("INSERT INTO runs (id, started_at, status) VALUES ('busy', 500.0, 'running')", [])
+        .unwrap();
+    assert_eq!(store.usage().unwrap().0, 2, "running runs are not counted");
+
+    let r = store.delete_runs(Some(5_000.0)).unwrap();
+    assert_eq!(r.runs_deleted, 1);
+    assert!(r.frame_bytes >= 100, "reports what was freed");
+    let ids: Vec<String> = store.list_runs(10).unwrap().into_iter().map(|r| r.id).collect();
+    assert_eq!(ids, ["new", "busy"]);
+    assert!(!store.frame_path("old", "p").exists());
+
+    let r = store.delete_runs(None).unwrap();
+    assert_eq!(r.runs_deleted, 1, "all finished runs");
+    let ids: Vec<String> = store.list_runs(10).unwrap().into_iter().map(|r| r.id).collect();
+    assert_eq!(ids, ["busy"], "a run in progress is kept");
+    std::fs::remove_dir_all(dir).unwrap();
+}

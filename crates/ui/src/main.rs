@@ -72,7 +72,7 @@ fn main() -> Result<()> {
     };
     let orchestrator = Orchestrator::new(&ingest, hub.clone(), adapters_dir(), rt.handle().clone());
     let settings = testudo_core::settings::Settings::load();
-    orchestrator.set_frame_max(settings.frame_max());
+    orchestrator.set_recording(&settings);
     startup.settings = settings;
     tracing::info!(socket = %ingest.socket_path().display(), adapters = %adapters_dir().display(), imported_shell_vars = imported, "testudo ready");
 

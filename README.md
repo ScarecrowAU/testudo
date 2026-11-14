@@ -119,7 +119,12 @@ Every run is recorded by default, from the GUI and the CLI alike.
 
 - **Events** (test lifecycle, steps, network, console, runner output) go to SQLite with their receive time. Replay re-applies them up to the scrub time, so the History view is the live view rewound: tests mid-step, network and console as of that moment, panes opening and closing.
 - **Frames** are the raw screencast JPEGs, appended per page with no re-encoding. Browsers only emit frames on repaint, and each distinct image is stored once; repeats (spinners, cursor blink, looping animation) become 20-byte references. MP4 export resamples to constant fps via ffmpeg on demand.
-- **Recording resolution** (⚙ settings menu, top right): frames are scaled to fit within an N×N box, keeping the page's shape; 640 to 1920 px, default 1024. Pages smaller than the box are kept at their own size (no padding, cropping or upscaling). It applies to runs started afterwards, from the GUI and the CLI. Settings live in `~/.config/testudo/settings.json` (`TESTUDO_CONFIG_DIR` overrides the directory).
+- **Settings** (⚙, top right; saved in `~/.config/testudo/settings.json`, `TESTUDO_CONFIG_DIR` overrides the directory; shared with `testudo-cli`):
+  - *Resolution*: frames fit within an N×N box, keeping the page's shape (640 to 1920 px, default 1024). Pages smaller than the box are kept at their own size: no padding, cropping or upscaling.
+  - *Frame rate*: every repaint (up to 60 fps, default) or a cap of 30, 15, 10 or 5 fps. A frame that arrives too soon is held and sent when its slot comes up, so a page's last state is always recorded.
+  - Both apply to runs started afterwards.
+  - *Location* of recordings and history (folder picker); takes effect the next time Testudo starts, existing recordings stay where they are. `TESTUDO_DATA_DIR` overrides it.
+  - *Delete recordings older than* 1, 3, 7, 14, 30 or 60 days, or *delete all*, after a confirmation. Runs in progress are kept; it reports what was freed.
 - **Per-test history**: hover a test to see its recent results across runs; mixed passes and failures are flagged as flaky. The History view opens with a summary of the last 50 runs: pass rate, flaky tests (hover for the list) and a sparkline of recent run durations coloured by result.
 - **Output** is a timestamped log table (source column, severity bars, stream filter); ● Live follows new lines and turns off when you scroll up.
 - Runs left `running` by a crashed Testudo are marked `interrupted` on next start.

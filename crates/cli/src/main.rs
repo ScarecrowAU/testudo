@@ -137,7 +137,7 @@ async fn run(args: &[String], data: &std::path::Path) -> Result<i32> {
         adapters_dir(),
         tokio::runtime::Handle::current(),
     );
-    orch.set_frame_max(testudo_core::settings::Settings::load().frame_max());
+    orch.set_recording(&testudo_core::settings::Settings::load());
 
     let mut labels: HashMap<String, String> = HashMap::new();
     for spec in specs {

@@ -15,6 +15,7 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::WindowExt;
 use gpui_kit::component::{ActiveTheme, Disableable, Selectable, Sizable, h_flex, h_resizable, resizable_panel, v_flex, v_resizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -34,6 +35,7 @@ use crate::model::{Model, Page, PageKey, Source};
 use crate::state::{InspectorTab, PageFocus, PagesView, Replay, Retired, StreamFilter};
 
 mod focus;
+mod settings;
 
 const HISTORY_LIMIT: usize = 200;
 /// How many recent runs the History summary covers.
@@ -281,6 +283,13 @@ impl TestudoApp {
         #[cfg(debug_assertions)]
         if std::env::var_os("TESTUDO_DEBUG_OPEN_PICKER").is_some() {
             app.pick_folder(window, cx);
+        }
+        #[cfg(debug_assertions)]
+        if std::env::var_os("TESTUDO_DEBUG_OPEN_SETTINGS").is_some() {
+            let app_handle = cx.entity().downgrade();
+            window.defer(cx, move |window, cx| {
+                let _ = app_handle.update(cx, |app, cx| app.open_settings(window, cx));
+            });
         }
         app
     }
@@ -953,41 +962,35 @@ impl TestudoApp {
             .child(self.settings_menu(cx))
     }
 
-    /// Gear button opening the settings menu. Changes are saved at once and
-    /// apply to runs started afterwards.
+    /// Gear button opening the settings dialog.
     fn settings_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let app = cx.entity().downgrade();
-        let current = self.settings.frame_max();
         Button::new("settings")
             .icon(media_icon("settings"))
             .small()
             .ghost()
             .tooltip("Settings")
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
-                menu = menu.label("Recording resolution (next run)");
-                for px in FRAME_SIZES {
-                    let app = app.clone();
-                    let label = if px == DEFAULT_FRAME_MAX {
-                        format!("{px} × {px} px (default)")
-                    } else {
-                        format!("{px} × {px} px")
-                    };
-                    menu = menu.item(PopupMenuItem::new(label).checked(px == current).on_click(move |_, _, cx| {
-                        let _ = app.update(cx, |this, cx| this.set_frame_max(px, cx));
-                    }));
-                }
-                menu
-            })
+            .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx)))
     }
 
-    #[tracing::instrument(level = "info", skip(self, cx))]
-    fn set_frame_max(&mut self, px: u32, cx: &mut Context<Self>) {
-        self.settings.frame_max_px = px;
-        self.orchestrator.set_frame_max(self.settings.frame_max());
-        if let Err(e) = self.settings.save() {
-            self.error = Some(format!("could not save settings: {e:#}"));
+    #[tracing::instrument(level = "info", skip_all)]
+    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let app = cx.entity().downgrade();
+        let store = self.store.clone();
+        let panel = cx.new(|_| settings::SettingsPanel::new(app, store));
+        window.open_dialog(cx, move |dialog, _, _| dialog.title("Settings").w(px(600.)).child(panel.clone()));
+    }
+
+    /// Recordings were deleted from the settings dialog: refresh History and
+    /// close a replay whose run is gone.
+    fn after_recordings_deleted(&mut self) {
+        self.refresh_history();
+        let gone = match (&self.replay, &self.store) {
+            (Some(r), Some(store)) => store.run(&r.run.id).ok().flatten().is_none(),
+            _ => false,
+        };
+        if gone && let Some(mut r) = self.replay.take() {
+            self.retired.extend(r.view.take_images());
         }
-        cx.notify();
     }
 
     // --- live ---------------------------------------------------------------

@@ -12,17 +12,25 @@ use serde::{Deserialize, Serialize};
 /// fit within an N×N box, keeping the page's shape.
 pub const FRAME_SIZES: [u32; 5] = [640, 800, 1024, 1280, 1920];
 pub const DEFAULT_FRAME_MAX: u32 = 1024;
+/// Frame-rate caps offered: 60 means every repaint (browsers top out there).
+pub const FRAME_RATES: [u32; 5] = [60, 30, 15, 10, 5];
+pub const DEFAULT_FRAME_RATE: u32 = 60;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// Recorded frames fit within this many pixels on each side.
     pub frame_max_px: u32,
+    /// At most this many recorded frames per second.
+    pub frame_rate: u32,
+    /// Where recordings and history are kept; None is the default data
+    /// directory. Read at startup (TESTUDO_DATA_DIR still overrides).
+    pub recordings_dir: Option<PathBuf>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { frame_max_px: DEFAULT_FRAME_MAX }
+        Self { frame_max_px: DEFAULT_FRAME_MAX, frame_rate: DEFAULT_FRAME_RATE, recordings_dir: None }
     }
 }
 
@@ -30,6 +38,10 @@ impl Settings {
     /// The recording box size, kept to something a browser can produce.
     pub fn frame_max(&self) -> u32 {
         self.frame_max_px.clamp(160, 4096)
+    }
+
+    pub fn frame_rate(&self) -> u32 {
+        self.frame_rate.clamp(1, 60)
     }
 
     /// Settings from the user's file; defaults when missing or unreadable.
@@ -84,7 +96,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(Settings::load_from(&file), Settings::default(), "missing file");
 
-        let s = Settings { frame_max_px: 1280 };
+        let s = Settings { frame_max_px: 1280, frame_rate: 15, recordings_dir: Some("/data/rec".into()) };
         s.save_to(&file).unwrap();
         assert_eq!(Settings::load_from(&file), s);
 
@@ -92,7 +104,8 @@ mod tests {
         assert_eq!(Settings::load_from(&file).frame_max_px, DEFAULT_FRAME_MAX, "missing field");
         std::fs::write(&file, "not json").unwrap();
         assert_eq!(Settings::load_from(&file), Settings::default(), "bad file");
-        assert_eq!(Settings { frame_max_px: 10 }.frame_max(), 160);
+        assert_eq!(Settings { frame_max_px: 10, ..Default::default() }.frame_max(), 160);
+        assert_eq!(Settings { frame_rate: 0, ..Default::default() }.frame_rate(), 1);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

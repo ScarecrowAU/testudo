@@ -17,6 +17,8 @@ const PROJECT_ROOT = process.env.TESTUDO_PROJECT_ROOT ?? process.cwd();
 const FRAME_MAX = Math.min(4096, Math.max(160, Number.parseInt(process.env.TESTUDO_FRAME_MAX ?? '', 10) || 1024));
 const FRAME_SIZE = { width: FRAME_MAX, height: FRAME_MAX };
 const FRAME_QUALITY = 70;
+// Frame-rate cap from Testudo's settings; 60 (the default) keeps every repaint.
+const FRAME_RATE = Math.min(60, Math.max(1, Number.parseInt(process.env.TESTUDO_FRAME_RATE ?? '', 10) || 60));
 
 const PATCHED = Symbol.for('testudo.patched');
 const instrumentedContexts = new WeakSet();
@@ -221,8 +223,57 @@ function instrumentPage(page, browserName) {
 
 function startScreencast(page, pageId, browserName) {
   const tr = t();
-  const sendFrame = (data, ts, viewportWidth, viewportHeight) =>
-    tr.frame({ pageId, ts, viewportWidth, viewportHeight }, data);
+  const limited = rateLimit((data, ts, viewportWidth, viewportHeight) =>
+    tr.frame({ pageId, ts, viewportWidth, viewportHeight }, data),
+  );
+  const sendFrame = limited.send;
+  const stop = startCapture(page, browserName, sendFrame);
+  return () => {
+    stop();
+    // The page's last state must not be lost to the limiter.
+    limited.flush();
+  };
+}
+
+/**
+ * At most FRAME_RATE frames per second. A frame arriving too soon is held
+ * (replacing any older held frame) and sent when its slot comes up, so the
+ * latest state always gets through: a page that stops changing still ends on
+ * its true last frame. At 60 fps (the browser's own maximum) frames pass
+ * straight through.
+ */
+function rateLimit(send) {
+  if (FRAME_RATE >= 60) return { send, flush() {} };
+  const interval = 1000 / FRAME_RATE;
+  let last = 0;
+  let held = null;
+  let timer = null;
+  const flush = () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    if (held) {
+      const args = held;
+      held = null;
+      last = Date.now();
+      send(...args);
+    }
+  };
+  return {
+    flush,
+    send(...args) {
+      const wait = interval - (Date.now() - last);
+      if (wait <= 0 && !timer) {
+        last = Date.now();
+        send(...args);
+        return;
+      }
+      held = args;
+      if (!timer) timer = setTimeout(flush, Math.max(0, wait));
+    },
+  };
+}
+
+function startCapture(page, browserName, sendFrame) {
 
   // Playwright >= 1.59ish: cross-browser screencast API.
   if (typeof page.screencast?.start === 'function') {
