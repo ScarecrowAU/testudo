@@ -4,6 +4,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
@@ -770,6 +771,18 @@ fn speed_label(s: f32) -> String {
     format!("{s}×")
 }
 
+/// The app icon (packaging/icons), embedded. One shared instance so gpui
+/// decodes and caches it once.
+fn app_icon() -> Arc<Image> {
+    static ICON: std::sync::LazyLock<Arc<Image>> = std::sync::LazyLock::new(|| {
+        Arc::new(Image::from_bytes(
+            ImageFormat::Png,
+            include_bytes!("../../../../packaging/icons/testudo-64.png").to_vec(),
+        ))
+    });
+    ICON.clone()
+}
+
 /// A Lucide icon bundled with gpui-kit's assets.
 fn media_icon(name: &str) -> Icon {
     Icon::empty().path(format!("icons/{name}.svg"))
@@ -853,7 +866,13 @@ impl TestudoApp {
             .py_2()
             .border_b_1()
             .border_color(cx.theme().border)
-            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Testudo"))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(img(app_icon()).size(px(24.)).flex_none())
+                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Testudo")),
+            )
             .child(
                 Button::new("mode-live")
                     .label("● Live")
