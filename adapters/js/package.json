@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "description": "Runner adapters injected by Testudo. Shipped inside Testudo, never installed into user projects. Zero dependencies by design.",
+  "license": "MIT OR Apache-2.0",
   "engines": {
     "node": ">=20"
   }
