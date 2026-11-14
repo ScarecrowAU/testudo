@@ -162,7 +162,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("testudo-update-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        // Canonical, as detected paths are (macOS's temp dir is behind a symlink).
+        dir.canonicalize().unwrap()
     }
 
     #[test]
