@@ -110,6 +110,20 @@ pub enum Event {
         #[serde(default)]
         worker_index: Option<i32>,
     },
+    /// A test the runner will run, announced before it starts (Playwright's
+    /// suite at run begin, Vitest per collected file): shown as pending.
+    TestQueued {
+        test_id: String,
+        title: String,
+        #[serde(default)]
+        title_path: Vec<String>,
+        #[serde(default)]
+        file: Option<String>,
+        #[serde(default)]
+        line: Option<u32>,
+        #[serde(default)]
+        project: Option<String>,
+    },
     StepBegin {
         test_id: String,
         step_id: String,

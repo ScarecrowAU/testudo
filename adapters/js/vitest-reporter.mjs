@@ -21,6 +21,22 @@ export default class TestudoVitestReporter {
     this.t.send({ type: 'runBegin' });
   }
 
+  // A file's tests are known before they run: announce them as pending.
+  onTestModuleCollected(testModule) {
+    for (const testCase of testModule.children.allTests()) {
+      if (this.begun.has(testCase.id)) continue;
+      this.t.send({
+        type: 'testQueued',
+        testId: testCase.id,
+        title: testCase.name,
+        titlePath: testCase.fullName.split(' > '),
+        file: testCase.module.moduleId,
+        line: testCase.location?.line,
+        project: testCase.project?.name || undefined,
+      });
+    }
+  }
+
   onTestCaseReady(testCase) {
     if (this.begun.has(testCase.id)) return;
     this.begun.add(testCase.id);

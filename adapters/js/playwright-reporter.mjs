@@ -19,7 +19,20 @@ export default class TestudoPlaywrightReporter {
   }
 
   onBegin(_config, suite) {
-    this.t.send({ type: 'runBegin', totalTests: suite.allTests().length });
+    const tests = suite.allTests();
+    this.t.send({ type: 'runBegin', totalTests: tests.length });
+    // Announce every test up front so the list can show them as pending.
+    for (const test of tests) {
+      this.t.send({
+        type: 'testQueued',
+        testId: test.id,
+        title: test.title,
+        titlePath: test.titlePath().filter(Boolean),
+        file: test.location?.file,
+        line: test.location?.line,
+        project: test.parent?.project()?.name || undefined,
+      });
+    }
   }
 
   onTestBegin(test, result) {

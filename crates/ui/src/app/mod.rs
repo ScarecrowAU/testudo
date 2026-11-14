@@ -26,7 +26,7 @@ use testudo_protocol::Event;
 use testudo_store::{RunRow, Store};
 
 use crate::bridge::UiMsg;
-use crate::logic::{rerun_args, 
+use crate::logic::{rerun_args, test_order, 
     REPEAT_THRESHOLD, RowState, Tone, expand_tilde, fmt_ago, fmt_dur, fmt_secs, fmt_time, status_label, summary_line,
     url_path, looks_like_failure, ordered_pages, pane_name,
     row_state, status_icon, truncate,
@@ -1409,13 +1409,14 @@ impl TestudoApp {
             }
             ListRow::Counts(ri) => {
                 let Some(run) = view.model.runs.get(ri) else { return line().into_any_element() };
-                let (passed, failed, running) = run.counts();
+                let (passed, failed, running, pending) = run.counts();
                 let total = run.total_tests.map(|t| format!(" of {t}")).unwrap_or_default();
                 line()
                     .gap_1()
                     .when(passed > 0, |d| d.child(pill(format!("✔ {passed}"), theme.green)))
                     .when(failed > 0, |d| d.child(pill(format!("✘ {failed}"), theme.red)))
                     .when(running > 0, |d| d.child(pill(format!("⏳ {running}"), theme.blue)))
+                    .when(pending > 0, |d| d.child(pill(format!("○ {pending}"), muted)))
                     .child(div().text_xs().text_color(muted).child(format!("{}{total} tests", run.tests.len())))
                     .into_any_element()
             }
@@ -1424,7 +1425,7 @@ impl TestudoApp {
                 let Some(t) = run.tests.get(ti) else { return line().into_any_element() };
                 // Duration bars are relative to the slowest test in the run.
                 let slowest = run.tests.iter().filter_map(|t| t.duration_ms).fold(1.0_f64, f64::max);
-                let (icon, tn) = status_icon(t.status);
+                let (icon, tn) = if t.queued { ("○", Tone::Muted) } else { status_icon(t.status) };
                 let bar = t.duration_ms.map(|d| (d / slowest).clamp(0.02, 1.0) as f32);
                 let bar_color = if matches!(tn, Tone::Failed) { theme.red } else { muted };
                 let store = self.store.clone();
@@ -2399,7 +2400,11 @@ fn run_rows(view: &PagesView) -> Vec<ListRow> {
             rows.push(ListRow::Gap);
             continue;
         }
-        for (ti, t) in run.tests.iter().enumerate() {
+        // Running, pending, failed, complete; by name within each.
+        let mut order: Vec<usize> = (0..run.tests.len()).collect();
+        order.sort_by_cached_key(|&ti| test_order(&run.tests[ti]));
+        for ti in order {
+            let t = &run.tests[ti];
             rows.push(ListRow::Test(ri, ti));
             if t.current_step.is_some() {
                 rows.push(ListRow::Note(ri, ti, NoteKind::Step));

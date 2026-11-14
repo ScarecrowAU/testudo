@@ -34,6 +34,18 @@ pub fn pane_name<'a>(model: &'a Model, page: &'a Page) -> &'a str {
         .unwrap_or(page.key.page_id.as_str())
 }
 
+/// Run-list order of a test: running, pending, failed, then complete
+/// (passed, skipped, interrupted); by name (case-insensitive) within a group.
+pub fn test_order(t: &Test) -> (u8, String) {
+    let group = match t.status {
+        _ if t.queued => 1,
+        None => 0,
+        Some(TestStatus::Failed | TestStatus::TimedOut) => 2,
+        Some(_) => 3,
+    };
+    (group, t.title.to_lowercase())
+}
+
 /// Pages in display order: running, failed, complete; by name (case-insensitive)
 /// within a group, page id as a stable tiebreak.
 pub fn ordered_pages(model: &Model) -> Vec<&Page> {
@@ -351,6 +363,59 @@ mod tests {
         assert!(stack_vertically((900.0, 800.0), (1280.0, 720.0), 30.0, 8.0));
         // Very wide pane, desktop page: side by side.
         assert!(!stack_vertically((2000.0, 600.0), (1280.0, 720.0), 30.0, 8.0));
+    }
+
+    #[test]
+    fn tests_order_by_state_then_name() {
+        let mut m = Model::new();
+        let queue = |id: &str| Event::TestQueued {
+            test_id: id.into(),
+            title: id.into(),
+            title_path: vec![],
+            file: None,
+            line: None,
+            project: None,
+        };
+        let begin = |id: &str| Event::TestBegin {
+            test_id: id.into(),
+            title: id.into(),
+            title_path: vec![],
+            file: None,
+            line: None,
+            project: None,
+            worker_index: None,
+        };
+        let end = |id: &str, status| Event::TestEnd { test_id: id.into(), status, duration_ms: None, error: None, note: None };
+        let events = [
+            queue("zeta passes"),
+            queue("Alpha pending"),
+            queue("beta fails"),
+            queue("alpha passes"),
+            queue("gamma running"),
+            queue("delta pending"),
+            queue("Beta skipped"),
+            begin("zeta passes"),
+            end("zeta passes", TestStatus::Passed),
+            begin("beta fails"),
+            end("beta fails", TestStatus::Failed),
+            begin("alpha passes"),
+            end("alpha passes", TestStatus::Passed),
+            begin("Beta skipped"),
+            end("Beta skipped", TestStatus::Skipped),
+            begin("gamma running"),
+        ];
+        for (i, e) in events.into_iter().enumerate() {
+            m.apply("r1", i as f64, e);
+        }
+        let run = &m.runs[0];
+        let mut tests: Vec<&Test> = run.tests.iter().collect();
+        tests.sort_by_cached_key(|t| test_order(t));
+        let order: Vec<&str> = tests.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(
+            order,
+            ["gamma running", "Alpha pending", "delta pending", "beta fails", "alpha passes", "Beta skipped", "zeta passes"]
+        );
+        assert_eq!(run.counts(), (2, 1, 1, 2), "passed, failed, running, pending");
     }
 
     #[test]

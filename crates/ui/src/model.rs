@@ -52,19 +52,19 @@ impl Run {
         self.tests.iter_mut().find(|t| t.id == id)
     }
 
-    pub fn counts(&self) -> (usize, usize, usize) {
-        let mut passed = 0;
-        let mut failed = 0;
-        let mut running = 0;
+    /// (passed, failed, running, pending)
+    pub fn counts(&self) -> (usize, usize, usize, usize) {
+        let (mut passed, mut failed, mut running, mut pending) = (0, 0, 0, 0);
         for t in &self.tests {
             match t.status {
+                _ if t.queued => pending += 1,
                 Some(TestStatus::Passed) => passed += 1,
                 Some(TestStatus::Failed | TestStatus::TimedOut) => failed += 1,
                 None => running += 1,
                 _ => {}
             }
         }
-        (passed, failed, running)
+        (passed, failed, running, pending)
     }
 }
 
@@ -103,6 +103,8 @@ pub struct Test {
     pub line: Option<u32>,
     /// Playwright project the test ran under.
     pub project: Option<String>,
+    /// Announced by the runner but not started yet (pending).
+    pub queued: bool,
     pub status: Option<TestStatus>,
     pub duration_ms: Option<f64>,
     pub error: Option<String>,
@@ -327,8 +329,9 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
             project,
             ..
         } => {
-            // Retries reuse the test id: reset in place.
+            // Queued tests start here; retries reuse the test id: reset in place.
             if let Some(t) = run.test_mut(&test_id) {
+                t.queued = false;
                 t.status = None;
                 t.error = None;
                 t.duration_ms = None;
@@ -343,6 +346,26 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
                     file,
                     line,
                     project,
+                    queued: false,
+                    status: None,
+                    duration_ms: None,
+                    error: None,
+                    current_step: None,
+                    note: None,
+                    steps: Vec::new(),
+                });
+            }
+        }
+        Event::TestQueued { test_id, title, title_path, file, line, project } => {
+            if run.test(&test_id).is_none() {
+                run.tests.push(Test {
+                    id: test_id,
+                    title,
+                    title_path,
+                    file,
+                    line,
+                    project,
+                    queued: true,
                     status: None,
                     duration_ms: None,
                     error: None,
