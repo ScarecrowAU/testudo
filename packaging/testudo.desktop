@@ -2,7 +2,7 @@
 Type=Application
 Name=Testudo
 GenericName=Test Runner
-Comment=Run, watch and replay Playwright, Vitest and Storybook suites
+Comment=Watch your tests, not your terminal. Run, watch and replay Playwright, Vitest and Storybook suites
 Exec=testudo
 Icon=testudo
 StartupWMClass=testudo
