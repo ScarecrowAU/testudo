@@ -114,28 +114,27 @@ impl TestudoApp {
         };
         let compare_target = test.and_then(|t| t.file.clone().map(|f| (f, t.title_path.clone())));
         let now = now_ms();
-        let compared: Option<Vec<ComparedCell>> = focus.compare.as_ref().map(|lanes| {
-            lanes
-                .iter()
-                .map(|l| {
-                    let status = l.prior.status.as_deref().map(|s| match s {
-                        "passed" => TestStatus::Passed,
-                        "failed" => TestStatus::Failed,
-                        "timedOut" => TestStatus::TimedOut,
-                        "skipped" => TestStatus::Skipped,
-                        "interrupted" => TestStatus::Interrupted,
-                        _ => TestStatus::Unknown,
-                    });
-                    let dur = l.prior.duration_ms.map(|d| format!(" · {}", fmt_dur(d))).unwrap_or_default();
-                    let fallback = if l.by_time_fallback { " · steps differ, by time" } else { "" };
-                    let label = format!(
-                        "{} ({}){dur}{fallback}",
-                        fmt_time(l.prior.run_started_at),
-                        fmt_ago(l.prior.run_started_at, now)
-                    );
-                    (label, status, l.image.clone())
-                })
-                .collect()
+        // The compared earlier run: (shown cell, position, how many there are).
+        let compared: Option<(Option<ComparedCell>, usize, usize)> = focus.compare.as_ref().map(|c| {
+            let cell = c.lane.as_ref().map(|l| {
+                let status = l.prior.status.as_deref().map(|s| match s {
+                    "passed" => TestStatus::Passed,
+                    "failed" => TestStatus::Failed,
+                    "timedOut" => TestStatus::TimedOut,
+                    "skipped" => TestStatus::Skipped,
+                    "interrupted" => TestStatus::Interrupted,
+                    _ => TestStatus::Unknown,
+                });
+                let dur = l.prior.duration_ms.map(|d| format!(" · {}", fmt_dur(d))).unwrap_or_default();
+                let fallback = if l.by_time_fallback { " · steps differ, by time" } else { "" };
+                let label = format!(
+                    "{} ({}){dur}{fallback}",
+                    fmt_time(l.prior.run_started_at),
+                    fmt_ago(l.prior.run_started_at, now)
+                );
+                (label, status, l.image.clone())
+            });
+            (cell, c.index, c.candidates.len())
         });
         let title = pane_name(model, page).to_owned();
         let browser = page.browser.clone().unwrap_or_default();
@@ -565,35 +564,63 @@ impl TestudoApp {
 
         let frame: AnyElement = match compared {
             None => frame.into_any_element(),
-            Some(lanes) if lanes.is_empty() => v_flex()
+            Some((_, _, 0)) => v_flex()
                 .flex_1()
                 .min_h_0()
                 .gap_1()
                 .child(div().text_xs().text_color(muted).child("No earlier recordings of this test (retention may have removed them)"))
                 .child(frame)
                 .into_any_element(),
-            Some(lanes) => {
-                let cell = |label: AnyElement, body: AnyElement| {
-                    v_flex().flex_1().min_w_0().min_h_0().gap_1().child(label).child(body)
-                };
-                let mut cells = vec![cell(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
+            Some((cell, index, total)) => {
+                let header = |content: Div| content.h(px(26.)).gap_2().items_center();
+                let this_run = v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .gap_1()
+                    .child(header(h_flex())
                         .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child("This run"))
-                        .child(pill(status_label(status), status_color))
-                        .into_any_element(),
-                    frame.into_any_element(),
-                )];
-                for (label, st, image) in lanes {
-                    let (_, stn) = status_icon(st);
-                    cells.push(cell(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
+                        .child(pill(status_label(status), status_color)))
+                    .child(frame);
+                let (label, st, image) = cell.unwrap_or_default();
+                let (_, stn) = status_icon(st);
+                // Left goes back in time (older runs), right forward.
+                let to_older = cx.listener(move |this, _, _, cx| this.step_compare(w, 1, cx));
+                let to_newer = cx.listener(move |this, _, _, cx| this.step_compare(w, -1, cx));
+                let older = index + 1 < total;
+                let newer = index > 0;
+                let earlier = v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .gap_1()
+                    .child(
+                        header(h_flex())
+                            .child(
+                                button("cmp-older")
+                                    .icon(media_icon("chevron-left"))
+                                    .xsmall()
+                                    .ghost()
+                                    .disabled(!older)
+                                    .when(!older, |b| b.cursor_default())
+                                    .tooltip("Older run")
+                                    .on_click(to_older),
+                            )
+                            .child(div().flex_none().text_xs().text_color(muted).child(format!("{} of {total}", index + 1)))
+                            .child(
+                                button("cmp-newer")
+                                    .icon(media_icon("chevron-right"))
+                                    .xsmall()
+                                    .ghost()
+                                    .disabled(!newer)
+                                    .when(!newer, |b| b.cursor_default())
+                                    .tooltip("Newer run")
+                                    .on_click(to_newer),
+                            )
                             .child(div().min_w_0().truncate().text_xs().text_color(muted).child(label))
-                            .child(pill(status_label(st), tone(stn, cx)))
-                            .into_any_element(),
+                            .child(pill(status_label(st), tone(stn, cx))),
+                    )
+                    .child(
                         div()
                             .flex_1()
                             .min_h_0()
@@ -603,25 +630,11 @@ impl TestudoApp {
                             .border_color(theme.border)
                             .bg(theme.secondary.opacity(0.4))
                             .relative()
-                            .children(image.map(frame_img))
-                            .into_any_element(),
-                    ));
-                }
-                // One row for two recordings, a 2×2 grid beyond that.
-                let mut rows = Vec::new();
-                let mut it = cells.into_iter();
-                while let Some(a) = it.next() {
-                    // Stretch: cells get their height from the row, not their content (frames
-                    // are pinned to their cell and add no height of their own).
-                    let mut row = h_flex().items_stretch().flex_1().min_h_0().gap_2().child(a);
-                    row = match it.next() {
-                        Some(b) => row.child(b),
-                        None if rows.is_empty() => row,
-                        None => row.child(div().flex_1()),
-                    };
-                    rows.push(row);
-                }
-                v_flex().flex_1().min_h_0().gap_2().children(rows).into_any_element()
+                            .children(image.map(frame_img)),
+                    );
+                // Stretch: cells get their height from the row, not their
+                // content (frames are pinned to their cell, adding no height).
+                h_flex().items_stretch().flex_1().min_h_0().gap_2().child(this_run).child(earlier).into_any_element()
             }
         };
 
@@ -969,6 +982,18 @@ impl TestudoApp {
             .track_scroll(&self.console_scroll)
             .flex_1(),
         )
+    }
+
+    /// Compare with an older (`delta` > 0) or newer earlier run.
+    fn step_compare(&mut self, w: Which, delta: isize, cx: &mut Context<Self>) {
+        let store = self.store.clone();
+        let mut retired = Vec::new();
+        if let (Some(store), Some(f)) = (store, self.view_mut(w).and_then(|v| v.focus.as_mut())) {
+            retired = f.step_compare(delta, &store);
+            f.sync_lists = true;
+        }
+        self.retired.extend(retired);
+        cx.notify();
     }
 
     pub(super) fn scrub_focus(&mut self, w: Which, x: Pixels, cx: &mut Context<Self>) {

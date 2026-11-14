@@ -271,15 +271,23 @@ pub struct PageFocus {
     pub console_filter: ConsoleFilter,
     /// What the mouse is over on the timeline (step / request / navigation).
     pub hover_label: Option<String>,
-    /// Side-by-side recordings of the same test from earlier runs, played in
-    /// step with this page (same time since page open).
-    pub compare: Option<Vec<CompareLane>>,
+    /// An earlier recording of the same test shown beside this page, played
+    /// in step with it; arrows move through the test's history.
+    pub compare: Option<Compare>,
     /// Line compared recordings up by test step (else by time since open).
     pub compare_by_step: bool,
 }
 
-/// Earlier runs shown next to the focused page.
-pub const COMPARE_RUNS: usize = 3;
+/// How far back the comparison's history goes, in runs.
+pub const COMPARE_HISTORY: usize = 50;
+
+/// Earlier recordings of the focused test, newest first, with one loaded.
+pub struct Compare {
+    pub candidates: Vec<PriorPage>,
+    /// Which candidate is shown (0 = the most recent earlier run).
+    pub index: usize,
+    pub lane: Option<CompareLane>,
+}
 
 pub struct CompareLane {
     pub prior: PriorPage,
@@ -365,23 +373,38 @@ impl PageFocus {
         out
     }
 
-    /// Show earlier recordings of `test` (file + title path) beside this page.
-    #[tracing::instrument(level = "info", name = "compare_open", skip(self, title_path, store), fields(lanes = tracing::field::Empty))]
+    /// Show the most recent earlier recording of `test` (file + title path)
+    /// beside this page; `step_compare` moves through older ones.
+    #[tracing::instrument(level = "info", name = "compare_open", skip(self, title_path, store), fields(runs = tracing::field::Empty))]
     pub fn open_compare(&mut self, file: &str, title_path: &[String], store: &Store) {
-        let prior = store
-            .prior_pages(file, title_path, &self.key.run_id, COMPARE_RUNS)
+        let candidates = store
+            .prior_pages(file, title_path, &self.key.run_id, COMPARE_HISTORY)
             .inspect_err(|e| tracing::warn!("comparison query failed: {e:#}"))
             .unwrap_or_default();
-        tracing::Span::current().record("lanes", prior.len());
-        self.compare = Some(prior.into_iter().map(|p| CompareLane::new(p, store)).collect());
+        tracing::Span::current().record("runs", candidates.len());
+        let lane = candidates.first().cloned().map(|p| CompareLane::new(p, store));
+        self.compare = Some(Compare { candidates, index: 0, lane });
+    }
+
+    /// Show an older (`delta` > 0) or newer (< 0) earlier recording.
+    pub fn step_compare(&mut self, delta: isize, store: &Store) -> Retired {
+        let Some(c) = &mut self.compare else { return Vec::new() };
+        let last = c.candidates.len().saturating_sub(1) as isize;
+        let index = (c.index as isize + delta).clamp(0, last) as usize;
+        if index == c.index || c.candidates.is_empty() {
+            return Vec::new();
+        }
+        c.index = index;
+        let old = c.lane.replace(CompareLane::new(c.candidates[index].clone(), store));
+        old.and_then(|mut l| l.image.take()).into_iter().collect()
     }
 
     pub fn close_compare(&mut self) -> Retired {
         self.compare
             .take()
+            .and_then(|c| c.lane)
+            .and_then(|mut l| l.image.take())
             .into_iter()
-            .flatten()
-            .filter_map(|mut l| l.image.take())
             .collect()
     }
 
@@ -392,16 +415,16 @@ impl PageFocus {
     pub fn update_compare(&mut self, page: &Page, steps: &[(f64, String)], retired: &mut Retired) {
         let t = self.t.min(self.bounds(page).1);
         let by_step = self.compare_by_step;
-        for lane in self.compare.iter_mut().flatten() {
+        if let Some(lane) = self.compare.as_mut().and_then(|c| c.lane.as_mut()) {
             let stepped = by_step
                 .then(|| crate::logic::align_by_step(steps, &lane.steps, t, page.opened_at, lane.prior.opened_at))
                 .flatten();
             lane.by_time_fallback = by_step && stepped.is_none();
             let at = stepped.unwrap_or(lane.prior.opened_at + (t - page.opened_at));
-            let Some(f) = lane.frames.as_mut().filter(|f| !f.entries.is_empty()) else { continue };
+            let Some(f) = lane.frames.as_mut().filter(|f| !f.entries.is_empty()) else { return };
             let i = f.index_at(at).unwrap_or(0);
             if lane.shown == Some(i) {
-                continue;
+                return;
             }
             if let Some(image) = f.read(i).ok().and_then(|j| ui_decode(&j)) {
                 retired.extend(lane.image.replace(image));
@@ -416,9 +439,9 @@ impl PageFocus {
         let start = page.opened_at;
         let end = page.closed_at.unwrap_or_else(testudo_core::now_ms);
         let last_frame = self.frames.as_ref().and_then(|f| f.entries.last()).map_or(start, |e| e.at);
-        // A finished page's timeline also covers longer compared recordings.
-        let compared = match (page.closed_at, &self.compare) {
-            (Some(_), Some(lanes)) => start + lanes.iter().map(CompareLane::length).fold(0.0, f64::max),
+        // A finished page's timeline also covers a longer compared recording.
+        let compared = match (page.closed_at, self.compare.as_ref().and_then(|c| c.lane.as_ref())) {
+            (Some(_), Some(lane)) => start + lane.length(),
             _ => start,
         };
         (start, end.max(last_frame).max(compared).max(start + 1.0))

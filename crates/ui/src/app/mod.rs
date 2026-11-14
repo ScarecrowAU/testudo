@@ -279,6 +279,11 @@ impl TestudoApp {
                 {
                     f.open_compare(&test.0, &test.1, &store);
                     f.compare_by_step = std::env::var("TESTUDO_DEBUG_COMPARE").as_deref() != Ok("time");
+                    let back: isize = std::env::var("TESTUDO_DEBUG_COMPARE_STEP").ok().and_then(|n| n.parse().ok()).unwrap_or(0);
+                    if back != 0 {
+                        let old = f.step_compare(back, &store);
+                        app.retired.extend(old);
+                    }
                 }
                 window.focus(&app.focus_handle, cx);
             }
@@ -686,7 +691,7 @@ impl TestudoApp {
             compare_lanes: view
                 .and_then(|v| v.focus.as_ref())
                 .and_then(|f| f.compare.as_ref())
-                .map_or(0, Vec::len),
+                .map_or(0, |c| usize::from(c.lane.is_some())),
         }
     }
 

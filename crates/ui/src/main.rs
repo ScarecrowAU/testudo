@@ -154,7 +154,7 @@ fn main() -> Result<()> {
 
 // gpui-kit's `Assets` embeds only the icons its components use; add the
 // player's media icons.
-gpui_kit::assets::icon_assets!(MediaIcons, [Play, Pause, SkipBack, StepBack, StepForward, Settings, RotateCcw, Columns2]);
+gpui_kit::assets::icon_assets!(MediaIcons, [Play, Pause, SkipBack, StepBack, StepForward, Settings, RotateCcw, Columns2, ChevronLeft, ChevronRight]);
 
 struct AppAssets;
 
