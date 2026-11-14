@@ -13,9 +13,10 @@
 //! - Closing the window ends the loop; a crash keeps watching for a fix.
 //! - The app's log also goes to `target/dev/testudo.log` (fresh per start;
 //!   the previous one is kept as `testudo.prev.log`).
-//! - With a local Pitot running (`make pitot`), the app's spans and logs are
-//!   exported to it (`dev/pitot/.state/testudo.env`), unless
-//!   TESTUDO_OTLP_ENDPOINT is already set.
+//! - `TESTUDO_*` settings in `dev/.env` (gitignored, `KEY=value` lines) are
+//!   passed to the app unless already set, e.g.
+//!   `TESTUDO_OTLP_ENDPOINT=http://collector:4318` to export its spans. The
+//!   endpoint is only used when it answers, so working offline stays quiet.
 //!
 //! Usage: testudo-dev [-- args for testudo]
 
@@ -146,12 +147,14 @@ fn start(bin: &Path, args: &[String], log_file: &Path) -> Option<Child> {
     let _ = std::fs::rename(log_file, log_file.with_file_name("testudo.prev.log"));
     let mut cmd = Command::new(bin);
     cmd.args(args).env("TESTUDO_LOG_FILE", log_file);
-    if std::env::var_os("TESTUDO_OTLP_ENDPOINT").is_none() {
-        let pitot = pitot_env(&pitot_state(bin));
-        if let Some((_, endpoint)) = pitot.iter().find(|(k, _)| k == "TESTUDO_OTLP_ENDPOINT") {
-            log(&format!("exporting traces and logs to Pitot at {endpoint}"));
+    let root = bin.ancestors().nth(3).unwrap_or(Path::new("."));
+    for (k, v) in dev_env(&root.join("dev/.env")) {
+        if std::env::var_os(&k).is_none() {
+            if k == "TESTUDO_OTLP_ENDPOINT" {
+                log(&format!("exporting traces to {v}"));
+            }
+            cmd.env(k, v);
         }
-        cmd.envs(pitot);
     }
     match cmd.spawn() {
         Ok(child) => Some(child),
@@ -162,31 +165,38 @@ fn start(bin: &Path, args: &[String], log_file: &Path) -> Option<Child> {
     }
 }
 
-/// Where `scripts/pitot.sh` keeps the exporter settings (`PITOT_STATE`, or
-/// `dev/pitot/.state` in the repo `bin` was built in).
-fn pitot_state(bin: &Path) -> PathBuf {
-    let dir = std::env::var_os("PITOT_STATE").map(PathBuf::from).unwrap_or_else(|| {
-        let root = bin.ancestors().nth(3).unwrap_or(Path::new("."));
-        root.join("dev/pitot/.state")
-    });
-    dir.join("testudo.env")
+/// `TESTUDO_*` lines from `dev/.env`. The OTLP settings are dropped when the
+/// endpoint doesn't answer.
+fn dev_env(path: &Path) -> Vec<(String, String)> {
+    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    let mut vars: Vec<(String, String)> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.trim().to_owned(), v.trim().trim_matches('"').to_owned()))
+        .filter(|(k, _)| k.starts_with("TESTUDO_"))
+        .collect();
+    let endpoint = vars.iter().find(|(k, _)| k == "TESTUDO_OTLP_ENDPOINT").map(|(_, v)| v.clone());
+    if let Some(url) = endpoint
+        && !reachable(&url)
+    {
+        log(&format!("{url} not reachable; not exporting traces"));
+        vars.retain(|(k, _)| !k.starts_with("TESTUDO_OTLP_"));
+    }
+    vars
 }
 
-/// `KEY=value` lines from `make pitot`, if that Pitot is answering.
-fn pitot_env(path: &Path) -> Vec<(String, String)> {
-    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
-    let vars: Vec<(String, String)> = text
-        .lines()
-        .filter_map(|l| l.split_once('='))
-        .map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned()))
-        .collect();
-    let up = vars
-        .iter()
-        .find(|(k, _)| k == "TESTUDO_OTLP_ENDPOINT")
-        .and_then(|(_, url)| url.strip_prefix("http://"))
-        .and_then(|host| host.trim_end_matches('/').parse::<std::net::SocketAddr>().ok())
-        .is_some_and(|addr| std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok());
-    if up { vars } else { Vec::new() }
+/// Can we open a TCP connection to the URL's host and port (300ms)?
+fn reachable(url: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let host = rest.split('/').next().unwrap_or(rest);
+    let host = if host.contains(':') { host.to_owned() } else { format!("{host}:{}", if url.starts_with("https") { 443 } else { 80 }) };
+    host.to_socket_addrs()
+        .ok()
+        .and_then(|mut a| a.next())
+        .is_some_and(|addr| std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok())
 }
 
 fn stop(mut child: Child) {

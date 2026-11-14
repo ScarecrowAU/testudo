@@ -3,11 +3,14 @@
 //! - Terminal: always, filtered by `RUST_LOG` (default: info).
 //! - `TESTUDO_LOG_FILE=<path>`: the same events, without colours, appended to
 //!   a file. `make dev` sets it so logs survive the terminal.
-//! - `TESTUDO_OTLP_ENDPOINT=<url>` (e.g. `http://localhost:7520`, Pitot or any
-//!   OTLP/HTTP collector): spans and log events exported over OTLP/HTTP, with
-//!   `TESTUDO_OTLP_TOKEN` sent as a bearer token. Testudo-specific names so
-//!   the user's `OTEL_*` settings (meant for the apps under test) don't send
-//!   Testudo's own telemetry anywhere, and ours don't leak into test runs.
+//! - `TESTUDO_OTLP_ENDPOINT=<url>` (any OTLP/HTTP collector, e.g.
+//!   `http://collector:4318`): spans exported over OTLP/HTTP, with
+//!   `TESTUDO_OTLP_TOKEN` sent as a bearer token if set. Log events too with
+//!   `TESTUDO_OTLP_LOGS=1`, for collectors with a logs pipeline.
+//!
+//! Testudo-specific names so the user's `OTEL_*` settings (meant for the apps
+//! under test) don't send Testudo's own telemetry anywhere, and ours don't
+//! leak into test runs.
 
 use std::fs::OpenOptions;
 use std::path::PathBuf;
@@ -26,6 +29,7 @@ use tracing_subscriber::{EnvFilter, Layer, fmt};
 pub const ENDPOINT_VAR: &str = "TESTUDO_OTLP_ENDPOINT";
 pub const TOKEN_VAR: &str = "TESTUDO_OTLP_TOKEN";
 pub const LOG_FILE_VAR: &str = "TESTUDO_LOG_FILE";
+pub const LOGS_VAR: &str = "TESTUDO_OTLP_LOGS";
 
 const DEFAULT_FILTER: &str = "info,wgpu=warn,naga=warn";
 /// What is exported: Testudo's own spans and logs, plus warnings from
@@ -101,12 +105,13 @@ pub fn init() -> Telemetry {
             let spans = tracing_opentelemetry::layer()
                 .with_tracer(tracer.tracer("testudo"))
                 .with_filter(otlp_filter());
-            let logs =
-                OpenTelemetryTracingBridge::new(&logger).with_filter(otlp_filter());
+            let logs = logger
+                .as_ref()
+                .map(|l| OpenTelemetryTracingBridge::new(l).with_filter(otlp_filter()));
             out.tracer = Some(tracer);
-            out.logger = Some(logger);
+            out.logger = logger;
             out.otlp_endpoint = endpoint;
-            (Some(spans), Some(logs))
+            (Some(spans), logs)
         }
         Some(Err(e)) => {
             eprintln!("testudo: OTLP export disabled: {e:#}");
@@ -124,7 +129,7 @@ pub fn init() -> Telemetry {
     out
 }
 
-fn otlp(base: &str) -> anyhow::Result<(SdkTracerProvider, SdkLoggerProvider)> {
+fn otlp(base: &str) -> anyhow::Result<(SdkTracerProvider, Option<SdkLoggerProvider>)> {
     let base = base.trim_end_matches('/');
     let headers: std::collections::HashMap<String, String> = std::env::var(TOKEN_VAR)
         .ok()
@@ -146,19 +151,20 @@ fn otlp(base: &str) -> anyhow::Result<(SdkTracerProvider, SdkLoggerProvider)> {
         .with_endpoint(format!("{base}/v1/traces"))
         .with_headers(headers.clone())
         .build()?;
-    let logs = LogExporter::builder()
-        .with_http()
-        .with_protocol(Protocol::HttpBinary)
-        .with_endpoint(format!("{base}/v1/logs"))
-        .with_headers(headers)
-        .build()?;
     let tracer = SdkTracerProvider::builder()
         .with_batch_exporter(spans)
         .with_resource(resource.clone())
         .build();
-    let logger = SdkLoggerProvider::builder()
-        .with_batch_exporter(logs)
-        .with_resource(resource)
-        .build();
+    let logger = if std::env::var(LOGS_VAR).is_ok_and(|v| v == "1") {
+        let logs = LogExporter::builder()
+            .with_http()
+            .with_protocol(Protocol::HttpBinary)
+            .with_endpoint(format!("{base}/v1/logs"))
+            .with_headers(headers)
+            .build()?;
+        Some(SdkLoggerProvider::builder().with_batch_exporter(logs).with_resource(resource).build())
+    } else {
+        None
+    };
     Ok((tracer, logger))
 }

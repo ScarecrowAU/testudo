@@ -224,6 +224,8 @@ impl Orchestrator {
             // Testudo's own telemetry settings are not for the test run.
             .env_remove("TESTUDO_OTLP_ENDPOINT")
             .env_remove("TESTUDO_OTLP_TOKEN")
+            .env_remove("TESTUDO_OTLP_LOGS")
+            .env_remove("TESTUDO_OTLP_FILTER")
             .env_remove("TESTUDO_LOG_FILE")
             .envs(envs)
             .stdin(Stdio::null())

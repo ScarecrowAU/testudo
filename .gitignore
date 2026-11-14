@@ -4,4 +4,4 @@ test-results/
 playwright-report/
 __screenshots__/
 .DS_Store
-dev/pitot/.state/
+dev/.env

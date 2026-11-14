@@ -29,7 +29,7 @@ fn main() -> Result<()> {
         tracing::info!(path = %path.display(), "logging to file");
     }
     if let Some(endpoint) = &telemetry.otlp_endpoint {
-        tracing::info!(%endpoint, "exporting traces and logs over OTLP");
+        tracing::info!(%endpoint, "exporting traces over OTLP");
     }
 
     // testudo [project-dir] [--run all|playwright|vitest|<suite name part>]
