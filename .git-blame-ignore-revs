@@ -1,0 +1,5 @@
+# Formatting-only commits, skipped by GitHub's blame view and by
+# `git blame` once `git config blame.ignoreRevsFile .git-blame-ignore-revs` is set.
+
+# style: format with rustfmt at max_width 120 (#8)
+cc47d70980f2fe679d8f86031539b68e443fb5fb
