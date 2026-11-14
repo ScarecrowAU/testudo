@@ -1,10 +1,20 @@
 name: CI
 
+# Only changes that can affect the build or tests run CI. Path filters are
+# not applied to tag pushes, so releases always build.
 on:
   push:
     branches: [main]
     tags: ["v*.*"]
+    paths: &code
+      - "crates/**"
+      - "adapters/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "Makefile"
+      - ".github/workflows/ci.yml"
   pull_request:
+    paths: *code
   workflow_dispatch:
 
 concurrency:
