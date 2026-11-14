@@ -1,5 +1,6 @@
 mod app;
 mod bridge;
+mod focus;
 mod model;
 mod replay;
 mod view;
@@ -18,17 +19,20 @@ fn main() -> Result<()> {
         )
         .init();
 
-    // testudo [project-dir] [--run playwright|vitest] [--replay <run-id> [--at <secs>]] [-- runner args]
+    // testudo [project-dir] [--run all|playwright|vitest|<suite name part>]
+    //         [--replay <run-id> [--at <secs>] [--focus <page-id>]] [-- runner args]
     let mut default_dir = None;
     let mut autorun = None;
     let mut replay = None;
     let mut replay_at = None;
+    let mut focus_page = None;
     let mut runner_args: Vec<String> = Vec::new();
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
         match arg.as_str() {
             "--run" => autorun = argv.next(),
             "--replay" => replay = argv.next(),
+            "--focus" => focus_page = argv.next(),
             "--at" => replay_at = argv.next().and_then(|s| s.parse::<f64>().ok()),
             "--" => runner_args.extend(argv.by_ref()),
             _ => default_dir = Some(PathBuf::from(arg)),
@@ -53,8 +57,8 @@ fn main() -> Result<()> {
         IngestServer::bind(hub.clone())?
     };
     let orchestrator = Orchestrator::new(
+        &ingest,
         hub.clone(),
-        ingest.socket_path().to_owned(),
         adapters_dir(),
         rt.handle().clone(),
     );
@@ -81,7 +85,7 @@ fn main() -> Result<()> {
         Box::new(move |cc| {
             let _ = ui_ctx.set(cc.egui_ctx.clone());
             let rx = bridge::spawn(&handle, &ui_hub, cc.egui_ctx.clone());
-            let mut app = app::TestudoApp::new(ui_orchestrator, rx, default_dir, store);
+            let mut app = app::TestudoApp::new(ui_orchestrator, rx, handle.clone(), default_dir, store);
             app.set_args(&runner_args);
             if let Some(kind) = autorun.as_deref() {
                 app.autorun(kind);
@@ -90,6 +94,9 @@ fn main() -> Result<()> {
                 app.open_replay(id);
                 if let Some(secs) = replay_at {
                     app.seek_replay(&cc.egui_ctx, secs * 1000.0);
+                }
+                if let Some(page) = focus_page.as_deref() {
+                    app.focus_replay_page(page);
                 }
             }
             Ok(Box::new(app))

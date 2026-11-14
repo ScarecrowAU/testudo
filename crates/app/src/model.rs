@@ -81,8 +81,12 @@ pub struct Page {
     pub texture: Option<TextureHandle>,
     pub last_frame_ts: f64,
     pub frame_count: u64,
+    /// Event time (ms since epoch, hub receive clock) the page opened.
+    pub opened_at: f64,
     /// Event time (ms since epoch) the page closed.
     pub closed_at: Option<f64>,
+    /// Main-frame navigations as (event time, url).
+    pub navigations: Vec<(f64, String)>,
     pub tile: Option<TileId>,
     pub network: Vec<NetRow>,
     pub console: Vec<ConsoleRow>,
@@ -100,6 +104,7 @@ pub struct NetRow {
 }
 
 pub struct ConsoleRow {
+    pub at: f64,
     pub level: String,
     pub text: String,
 }
@@ -171,7 +176,9 @@ impl Model {
                         texture: None,
                         last_frame_ts: 0.0,
                         frame_count: 0,
+                        opened_at: at,
                         closed_at: None,
+                        navigations: Vec::new(),
                         tile: None,
                         network: Vec::new(),
                         console: Vec::new(),
@@ -186,6 +193,7 @@ impl Model {
             }
             Event::Navigated { page_id, url } => {
                 if let Some(p) = self.pages.get_mut(&page_key(&page_id)) {
+                    p.navigations.push((at, url.clone()));
                     p.url = url;
                 }
             }
@@ -193,7 +201,7 @@ impl Model {
                 page_id,
                 request_id,
                 phase,
-                ts,
+                ts: _,
                 method,
                 url,
                 status,
@@ -211,7 +219,7 @@ impl Model {
                                 resource_type: resource_type.unwrap_or_default(),
                                 status: None,
                                 error: None,
-                                started: ts,
+                                started: at,
                                 finished: None,
                             },
                             MAX_ROWS,
@@ -220,7 +228,7 @@ impl Model {
                             if let Some(row) = p.network.iter_mut().rev().find(|r| r.request_id == request_id) {
                                 row.status = status.or(row.status);
                                 row.error = error.or(row.error.take());
-                                row.finished = Some(ts);
+                                row.finished = Some(at);
                             }
                         }
                     }
@@ -228,7 +236,7 @@ impl Model {
             }
             Event::Console { page_id, level, text, .. } => {
                 if let Some(p) = self.pages.get_mut(&page_key(&page_id)) {
-                    push_capped(&mut p.console, ConsoleRow { level, text }, MAX_ROWS);
+                    push_capped(&mut p.console, ConsoleRow { at, level, text }, MAX_ROWS);
                 }
             }
             other => apply_run_event(self.ensure_run(run_id), other),

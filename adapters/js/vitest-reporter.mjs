@@ -9,13 +9,21 @@ const STATUS = { passed: 'passed', failed: 'failed', skipped: 'skipped', pending
 export default class TestudoVitestReporter {
   constructor() {
     this.t = connect({ role: 'reporter', runner: 'vitest' });
+    // Vitest can deliver onTestCaseResult before onTestCaseReady for fast tests
+    // under load. Testudo's protocol requires begin before end (a begin for an
+    // ended test means "retry, reset"), so synthesize the begin when the result
+    // comes first and drop the late ready.
+    this.begun = new Set();
   }
 
   onTestRunStart() {
+    this.begun.clear(); // watch mode: each run starts fresh
     this.t.send({ type: 'runBegin' });
   }
 
   onTestCaseReady(testCase) {
+    if (this.begun.has(testCase.id)) return;
+    this.begun.add(testCase.id);
     this.t.send({
       type: 'testBegin',
       testId: testCase.id,
@@ -28,6 +36,7 @@ export default class TestudoVitestReporter {
   }
 
   onTestCaseResult(testCase) {
+    if (!this.begun.has(testCase.id)) this.onTestCaseReady(testCase);
     const result = testCase.result();
     this.t.send({
       type: 'testEnd',

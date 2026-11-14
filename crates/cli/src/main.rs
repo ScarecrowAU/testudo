@@ -1,6 +1,8 @@
 //! Headless Testudo. Seed of the CI agent.
 //!
-//! testudo-cli run <playwright|vitest|cmd:PROGRAM> <project-dir> [--no-record] [--quiet] [-- runner args...]
+//! testudo-cli suites <dir>
+//! testudo-cli run [FILTER...] <dir> [--no-record] [--quiet] [-- runner args...]
+//! testudo-cli run cmd:PROGRAM <dir> [-- args...]
 //! testudo-cli history [--limit N]
 //! testudo-cli show <run-id>
 //! testudo-cli export <run-id> <page-id> <out.mp4> [--fps N]
@@ -10,13 +12,18 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
+use testudo_core::discover::{Suite, discover};
 use testudo_core::{Hub, IngestServer, Orchestrator, RunSpec, RunnerKind, adapters_dir};
 use testudo_protocol::{Event, Message};
 use testudo_store::export::{ExportOptions, export_mp4};
 use testudo_store::{Recorder, Retention, Store, default_data_dir};
 
 const USAGE: &str = "usage:
-  testudo-cli run <playwright|vitest|cmd:PROGRAM> <project-dir> [--no-record] [--quiet] [-- runner args...]
+  testudo-cli suites <dir>                 list the test suites found under <dir>
+  testudo-cli run [FILTER...] <dir> [--no-record] [--quiet] [-- runner args...]
+                                           run discovered suites (all runnable ones, or those
+                                           matching a FILTER: playwright, vitest, or part of a name)
+  testudo-cli run cmd:PROGRAM <dir> [-- args...]
   testudo-cli history [--limit N]
   testudo-cli show <run-id>
   testudo-cli export <run-id> <page-id> <out.mp4> [--fps N]
@@ -37,6 +44,11 @@ fn main() -> Result<()> {
         Some("run") => {
             let code = run(&args[1..], &data)?;
             std::process::exit(code);
+        }
+        Some("suites") => {
+            let dir = PathBuf::from(args.get(1).context(USAGE)?);
+            print_suites(&discover(&dir));
+            Ok(())
         }
         Some("history") => history(&args[1..], &data),
         Some("show") => show(args.get(1).context(USAGE)?, &data),
@@ -75,74 +87,131 @@ async fn run(args: &[String], data: &std::path::Path) -> Result<i32> {
         Some(i) => (&args[..i], args[i + 1..].to_vec()),
         None => (args, vec![]),
     };
-    let kind = match ours.first().map(String::as_str) {
-        Some("playwright") => RunnerKind::Playwright,
-        Some("vitest") => RunnerKind::Vitest,
-        Some(s) if s.starts_with("cmd:") => RunnerKind::Command { program: s[4..].to_owned() },
-        _ => bail!(USAGE),
-    };
-    let cwd = PathBuf::from(ours.get(1).context(USAGE)?);
     let record = !ours.iter().any(|a| a == "--no-record");
     let quiet = ours.iter().any(|a| a == "--quiet");
+    let positional: Vec<&String> = ours.iter().filter(|a| !a.starts_with("--")).collect();
+    let Some((dir, filters)) = positional.split_last() else { bail!(USAGE) };
+    let dir = PathBuf::from(dir.as_str());
+    if !dir.is_dir() {
+        bail!("{} is not a directory\n\n{USAGE}", dir.display());
+    }
+
+    let specs: Vec<RunSpec> = match filters.first().and_then(|f| f.strip_prefix("cmd:")) {
+        Some(program) => vec![RunSpec {
+            label: format!("command · {program}"),
+            kind: RunnerKind::Command { program: program.to_owned() },
+            cwd: dir.clone(),
+            config: None,
+            args: runner_args,
+        }],
+        None => {
+            let suites = discover(&dir);
+            let chosen: Vec<&Suite> = suites
+                .iter()
+                .filter(|s| filters.is_empty() || filters.iter().any(|f| s.matches(f)))
+                .collect();
+            for s in chosen.iter().filter(|s| !s.runnable()) {
+                eprintln!("skipping {}: {}", s.name, s.problems.join("; "));
+            }
+            let specs: Vec<RunSpec> = chosen
+                .iter()
+                .filter(|s| s.runnable())
+                .filter_map(|s| RunSpec::for_suite(s, runner_args.clone()))
+                .collect();
+            if specs.is_empty() {
+                eprintln!("no runnable suites matched under {}", dir.display());
+                print_suites(&suites);
+                return Ok(2);
+            }
+            specs
+        }
+    };
 
     let hub = Hub::default();
     let mut rx = hub.subscribe();
     let recorder = if record { Some(Recorder::spawn(data, &hub, Retention::from_env())?) } else { None };
     let ingest = IngestServer::bind(hub.clone())?;
     let orch = Orchestrator::new(
+        &ingest,
         hub.clone(),
-        ingest.socket_path().to_owned(),
         adapters_dir(),
         tokio::runtime::Handle::current(),
     );
-    let label = format!(
-        "{} · {}",
-        kind.name(),
-        cwd.canonicalize()?.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
-    );
-    let run = orch.start(RunSpec {
-        label,
-        kind,
-        cwd,
-        args: runner_args,
-    })?;
 
-    let mut frames: HashMap<String, u64> = HashMap::new();
+    let mut labels: HashMap<String, String> = HashMap::new();
+    for spec in specs {
+        let label = spec.label.clone();
+        match orch.start(spec) {
+            Ok(run) => {
+                eprintln!("started {label} ({})", run.id);
+                labels.insert(run.id.clone(), label);
+            }
+            Err(e) => eprintln!("could not start {label}: {e:#}"),
+        }
+    }
+    let many = labels.len() > 1;
+
+    let mut results: Vec<(String, Option<i32>)> = Vec::new();
     let mut stop = stop_signals()?;
     let mut cancelled = false;
-    let exit_code = loop {
+    while results.len() < labels.len() {
         tokio::select! {
             Some(sig) = stop.recv() => {
-                eprintln!("{sig}: stopping run (SIGINT, escalating after {}s)…", testudo_core::CANCEL_GRACE.as_secs());
+                eprintln!("{sig}: stopping runs (SIGINT, escalating after {}s)…", testudo_core::CANCEL_GRACE.as_secs());
                 cancelled = true;
-                run.cancel();
+                orch.cancel_all();
             }
             msg = rx.recv() => {
-                let Some(msg) = msg else { break 1 };
+                let Some(msg) = msg else { break };
+                let tag = if many { format!("[{}] ", labels.get(&msg.run_id).map_or("?", |s| s)) } else { String::new() };
                 match msg.message {
-                    Message::Frame { header, .. } => *frames.entry(header.page_id).or_default() += 1,
-                    Message::Event(Event::Stdio { line, .. }) => println!("  | {line}"),
+                    Message::Frame { .. } => {}
+                    Message::Event(Event::Stdio { line, .. }) => println!("{tag}| {line}"),
                     Message::Event(Event::ProcessExited { code }) => {
-                        break if cancelled { 130 } else { code.unwrap_or(1) };
+                        results.push((msg.run_id.clone(), code));
                     }
-                    Message::Event(ev) if !quiet => println!("{}", serde_json::to_string(&ev)?),
+                    Message::Event(ev) if !quiet => println!("{tag}{}", serde_json::to_string(&ev)?),
                     Message::Event(_) => {}
                 }
             }
         }
-    };
+    }
 
     hub.close();
     if let Some(r) = recorder {
         r.join();
     }
-    for (page, n) in &frames {
-        eprintln!("page {page}: {n} frames");
+    for (id, code) in &results {
+        let status = match code {
+            Some(0) => "passed".to_owned(),
+            Some(c) => format!("failed (exit {c})"),
+            None => "stopped".to_owned(),
+        };
+        eprintln!("{:<8} {}  {id}", status, labels.get(id).map_or("?", |s| s));
     }
     if record {
-        eprintln!("recorded run {} in {}", run.id, data.display());
+        eprintln!("recorded in {}", data.display());
     }
-    Ok(exit_code)
+    let worst = results.iter().map(|(_, c)| c.unwrap_or(1)).find(|c| *c != 0).unwrap_or(0);
+    Ok(if cancelled { 130 } else { worst })
+}
+
+fn print_suites(suites: &[Suite]) {
+    if suites.is_empty() {
+        println!("no test suites found");
+        return;
+    }
+    for s in suites {
+        let version = s.tool.as_ref().and_then(|t| t.version.as_deref()).map(|v| format!(" {v}")).unwrap_or_default();
+        let state = if s.runnable() { "ready" } else { "-" };
+        println!("{state:<6} {}{version}    [{}]", s.name, s.id);
+        for p in &s.problems {
+            println!("         ✘ {p}");
+        }
+        for w in &s.warnings {
+            println!("         ⚠ {w}");
+        }
+    }
 }
 
 /// SIGINT, SIGTERM and SIGHUP all mean "stop the run cleanly".

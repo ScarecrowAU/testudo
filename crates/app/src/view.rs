@@ -5,11 +5,12 @@
 use std::collections::HashMap;
 
 use egui::{Color32, RichText, Sense, Stroke};
-use egui_tiles::{SimplificationOptions, Tile, TileId, Tiles, Tree, UiResponse};
+use egui_tiles::{Container, Grid, SimplificationOptions, Tile, TileId, Tiles, Tree, UiResponse};
 use testudo_core::{RunHandle, RunId};
 use testudo_protocol::{Event, StdStream, TestStatus};
 use testudo_store::Store;
 
+use crate::focus::PageFocus;
 use crate::model::{Effect, Model, Page, PageKey, Test};
 
 /// How long a closed page's last frame stays on screen before its pane is removed.
@@ -34,6 +35,12 @@ pub struct PagesView {
     pub selected_run: Option<String>,
     pub inspector_tab: InspectorTab,
     pub keep_closed_pages: bool,
+    output_filter: String,
+    hide_repeated_stderr: bool,
+    /// Single-page focus (live watch or recording scrubber), replacing the grid.
+    pub focus: Option<PageFocus>,
+    /// A pane was clicked; the owner opens focus with the right data source.
+    pub focus_request: Option<PageKey>,
 }
 
 impl PagesView {
@@ -44,7 +51,11 @@ impl PagesView {
             selected_page: None,
             selected_run: None,
             inspector_tab: InspectorTab::Output,
-            keep_closed_pages: false,
+            keep_closed_pages: true,
+            output_filter: String::new(),
+            hide_repeated_stderr: true,
+            focus: None,
+            focus_request: None,
         }
     }
 
@@ -59,16 +70,42 @@ impl PagesView {
 
     fn add_pane(&mut self, key: PageKey) {
         let tile = self.tree.tiles.insert_pane(key.clone());
-        match self.tree.root.and_then(|r| self.tree.tiles.get_mut(r)) {
-            Some(Tile::Container(container)) => container.add_child(tile),
-            Some(Tile::Pane(_)) => {
-                let old_root = self.tree.root.unwrap();
-                self.tree.root = Some(self.tree.tiles.insert_grid_tile(vec![old_root, tile]));
-            }
-            None => self.tree.root = Some(self.tree.tiles.insert_grid_tile(vec![tile])),
-        }
         if let Some(page) = self.model.pages.get_mut(&key) {
             page.tile = Some(tile);
+        }
+        // Placement is decided by `arrange`.
+    }
+
+    /// Pages in display order: running first, then failed, then complete; by
+    /// name within each group (case-insensitive), page id as a stable tiebreak.
+    pub fn ordered_pages(&self) -> Vec<&Page> {
+        let mut pages: Vec<&Page> = self.model.pages.values().collect();
+        pages.sort_by_cached_key(|p| {
+            let state = pane_state(p, self.model.test_for_page(p));
+            (state, pane_name(&self.model, p).to_lowercase(), p.key.page_id.clone())
+        });
+        pages
+    }
+
+    /// Keep the root grid's children in `ordered_pages` order. Rebuilds the grid
+    /// only when the order actually changed (a page opened, closed, or its test
+    /// finished), so steady frames cost one comparison.
+    fn arrange(&mut self) {
+        let wanted: Vec<TileId> = self.ordered_pages().iter().filter_map(|p| p.tile).collect();
+        let current = self
+            .tree
+            .root
+            .and_then(|r| self.tree.tiles.get_container(r))
+            .map(|c| c.children_vec());
+        if current.as_ref() == Some(&wanted) {
+            return;
+        }
+        let grid = Tile::Container(Container::Grid(Grid::new(wanted)));
+        match self.tree.root {
+            Some(root) if matches!(self.tree.tiles.get(root), Some(Tile::Container(_))) => {
+                self.tree.tiles.insert(root, grid)
+            }
+            _ => self.tree.root = Some(self.tree.tiles.insert_new(grid)),
         }
     }
 
@@ -149,19 +186,46 @@ impl PagesView {
         action
     }
 
-    pub fn pages_ui(&mut self, ui: &mut egui::Ui, empty_hint: &str) {
+    /// Focus a page of this view's own (live) model.
+    pub fn open_live_focus(&mut self, key: PageKey) {
+        if let Some(page) = self.model.pages.get(&key) {
+            self.focus = Some(PageFocus::live(page));
+            self.selected_page = Some(key);
+            self.inspector_tab = InspectorTab::Network;
+        }
+    }
+
+    pub fn open_focus(&mut self, focus: PageFocus) {
+        self.selected_page = Some(focus.key.clone());
+        self.inspector_tab = InspectorTab::Network;
+        self.focus = Some(focus);
+    }
+
+    pub fn pages_ui(&mut self, ui: &mut egui::Ui, empty_hint: &str, store: Option<&Store>) {
+        if let Some(focus) = &mut self.focus {
+            focus.ui(ui, &self.model, store);
+            if focus.close {
+                self.focus = None;
+            }
+            return;
+        }
         if self.model.pages.is_empty() {
             ui.centered_and_justified(|ui| {
                 ui.weak(empty_hint);
             });
             return;
         }
+        self.arrange();
         let mut behavior = PaneBehavior {
             model: &self.model,
             selected: &mut self.selected_page,
             clicked: false,
+            open: None,
         };
         self.tree.ui(&mut behavior, ui);
+        if let Some(key) = behavior.open.take() {
+            self.focus_request = Some(key);
+        }
         if behavior.clicked && self.inspector_tab == InspectorTab::Output {
             self.inspector_tab = InspectorTab::Network;
         }
@@ -177,6 +241,14 @@ impl PagesView {
             match (&self.inspector_tab, &self.selected_page, &self.selected_run) {
                 (InspectorTab::Output, _, Some(run)) => ui.weak(format!("run {run}")),
                 (InspectorTab::Output, _, None) => ui.weak("select a run"),
+                (_, Some(p), _) if self.focus.is_some() => ui.weak(format!(
+                    "page {} · synced to {:.2}s",
+                    p.page_id,
+                    self.focus.as_ref().map_or(0.0, |f| {
+                        let opened = self.model.pages.get(p).map_or(f.time(), |pg| pg.opened_at);
+                        (f.time() - opened) / 1000.0
+                    })
+                )),
                 (_, Some(p), _) => ui.weak(format!("page {}", p.page_id)),
                 (_, None, _) => ui.weak("click a page to inspect it"),
             };
@@ -188,15 +260,61 @@ impl PagesView {
         match self.inspector_tab {
             InspectorTab::Output => {
                 let Some(run) = self.selected_run.as_deref().and_then(|id| self.model.run(id)) else { return };
+
+                // Runners and test environments write plenty of non-errors to stderr
+                // (jsdom "Not implemented", Node experimental warnings, progress), so
+                // colour by content, and optionally fold stderr lines that repeat a
+                // lot into a summary instead of letting them bury the test output.
+                let mut repeats: HashMap<&str, usize> = HashMap::new();
+                for (s, l) in &run.stdio {
+                    if *s == StdStream::Stderr {
+                        *repeats.entry(l.as_str()).or_default() += 1;
+                    }
+                }
+                let noisy = |l: &str| repeats.get(l).is_some_and(|n| *n > REPEAT_THRESHOLD);
+                let filter = self.output_filter.to_lowercase();
+                let text = ui.visuals().text_color();
                 let lines: Vec<(Color32, &str)> = run
                     .stdio
                     .iter()
+                    .filter(|(s, l)| !(self.hide_repeated_stderr && *s == StdStream::Stderr && noisy(l)))
                     .map(|(s, l)| {
-                        let c = if *s == StdStream::Stderr { Color32::LIGHT_RED } else { ui.visuals().text_color() };
+                        let c = if looks_like_failure(l) {
+                            Color32::LIGHT_RED
+                        } else if *s == StdStream::Stderr {
+                            text.gamma_multiply(0.75)
+                        } else {
+                            text
+                        };
                         (c, l.as_str())
                     })
                     .chain(run.adapter_logs.iter().map(|l| (Color32::GOLD, l.as_str())))
+                    .filter(|(_, l)| filter.is_empty() || l.to_lowercase().contains(&filter))
                     .collect();
+
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.output_filter)
+                            .hint_text("filter output")
+                            .desired_width(220.0),
+                    );
+                    ui.checkbox(&mut self.hide_repeated_stderr, "Hide repeated stderr");
+                    if self.hide_repeated_stderr {
+                        let mut folded: Vec<(&str, usize)> =
+                            repeats.iter().filter(|(_, n)| **n > REPEAT_THRESHOLD).map(|(l, n)| (*l, *n)).collect();
+                        folded.sort_by_key(|f| std::cmp::Reverse(f.1));
+                        if !folded.is_empty() {
+                            let total: usize = folded.iter().map(|(_, n)| n).sum();
+                            let detail = folded
+                                .iter()
+                                .map(|(l, n)| format!("{n} × {l}"))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            ui.weak(format!("{total} repeated stderr lines hidden"))
+                                .on_hover_text(detail);
+                        }
+                    }
+                });
                 egui::ScrollArea::both()
                     .stick_to_bottom(true)
                     .auto_shrink(false)
@@ -205,6 +323,12 @@ impl PagesView {
                             ui.label(RichText::new(*l).monospace().color(*c));
                         }
                     });
+            }
+            InspectorTab::Network if self.focus.is_some() => {
+                self.focus.as_mut().unwrap().network_ui(ui, &self.model);
+            }
+            InspectorTab::Console if self.focus.is_some() => {
+                self.focus.as_mut().unwrap().console_ui(ui, &self.model);
             }
             InspectorTab::Network => {
                 let Some(page) = self.selected_page.as_ref().and_then(|k| self.model.pages.get(k)) else { return };
@@ -259,6 +383,24 @@ impl PagesView {
     }
 }
 
+/// Stderr lines repeated more than this many times in a run count as noise.
+const REPEAT_THRESHOLD: usize = 3;
+
+/// Heuristic for lines worth highlighting, whichever stream they came on.
+fn looks_like_failure(line: &str) -> bool {
+    let l = line.to_lowercase();
+    let summary_ok = l.contains(" 0 failed") || l.contains("(0 failed") || l.contains("0 errors");
+    !summary_ok
+        && (l.contains("error")
+            || l.contains("failed")
+            || l.contains("panicked")
+            || l.contains("exception")
+            || l.contains('✘')
+            || l.trim_start().starts_with('×')
+            || l.contains("timed out")
+            || l.contains("timeout of"))
+}
+
 fn test_row(ui: &mut egui::Ui, t: &Test, store: Option<&Store>) {
     let (icon, color) = status_icon(t.status);
     let mut text = format!("{icon} {}", t.title);
@@ -308,6 +450,7 @@ struct PaneBehavior<'a> {
     model: &'a Model,
     selected: &'a mut Option<PageKey>,
     clicked: bool,
+    open: Option<PageKey>,
 }
 
 impl egui_tiles::Behavior<PageKey> for PaneBehavior<'_> {
@@ -320,7 +463,6 @@ impl egui_tiles::Behavior<PageKey> for PaneBehavior<'_> {
         let frame = egui::Frame::new()
             .inner_margin(4.0)
             .stroke(Stroke::new(if is_selected { 2.0 } else { 1.0 }, status_color));
-        let mut drag = false;
         let resp = frame
             .show(ui, |ui| {
                 // Everything above the frame is one line each and truncated: with
@@ -331,14 +473,8 @@ impl egui_tiles::Behavior<PageKey> for PaneBehavior<'_> {
                 if page.closed_at.is_some() {
                     meta.push_str(" · closed");
                 }
-                let header = ui
-                    .add(
-                        egui::Label::new(RichText::new(title).strong().color(status_color))
-                            .truncate()
-                            .sense(Sense::click_and_drag()),
-                    )
+                ui.add(egui::Label::new(RichText::new(title).strong().color(status_color)).truncate())
                     .on_hover_text(format!("{title}\n{meta}\n{}", page.url));
-                drag = header.drag_started();
                 if ui.available_height() > 180.0 {
                     ui.add(egui::Label::new(RichText::new(&page.url).weak().small()).truncate());
                 }
@@ -350,16 +486,18 @@ impl egui_tiles::Behavior<PageKey> for PaneBehavior<'_> {
         if resp.clicked() {
             *self.selected = Some(key.clone());
             self.clicked = true;
+            self.open = Some(key.clone());
         }
-        if drag { UiResponse::DragStarted } else { UiResponse::None }
+        resp.on_hover_text("click to open: watch live, or scrub the recording");
+        // No drag-to-rearrange: panes are ordered automatically.
+        UiResponse::None
     }
 
     fn tab_title_for_pane(&mut self, key: &PageKey) -> egui::WidgetText {
         self.model
             .pages
             .get(key)
-            .and_then(|p| self.model.test_for_page(p))
-            .map(|t| t.title.clone())
+            .map(|p| pane_name(self.model, p).to_owned())
             .unwrap_or_else(|| key.page_id.clone())
             .into()
     }
@@ -380,6 +518,35 @@ impl egui_tiles::Behavior<PageKey> for PaneBehavior<'_> {
     fn is_tab_closable(&self, _tiles: &Tiles<PageKey>, _tile_id: TileId) -> bool {
         false
     }
+}
+
+/// Pane ordering groups.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PaneState {
+    /// Page still open.
+    Running,
+    /// Page closed and its test failed or timed out.
+    Failed,
+    /// Page closed otherwise (passed, skipped, interrupted, or outside a test).
+    Complete,
+}
+
+pub fn pane_state(page: &Page, test: Option<&Test>) -> PaneState {
+    if page.closed_at.is_none() {
+        return PaneState::Running;
+    }
+    match test.and_then(|t| t.status) {
+        Some(TestStatus::Failed | TestStatus::TimedOut) => PaneState::Failed,
+        _ => PaneState::Complete,
+    }
+}
+
+/// What a pane is called: its test's title, else the page id.
+pub fn pane_name<'a>(model: &'a Model, page: &'a Page) -> &'a str {
+    model
+        .test_for_page(page)
+        .map(|t| t.title.as_str())
+        .unwrap_or(page.key.page_id.as_str())
 }
 
 fn draw_frame(ui: &mut egui::Ui, page: &Page) {
@@ -414,5 +581,79 @@ pub fn truncate(s: &str, max: usize) -> String {
         let mut out: String = s.chars().take(max).collect();
         out.push('…');
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PagesView, looks_like_failure};
+    use testudo_protocol::{Event, TestStatus};
+
+    #[test]
+    fn panes_order_by_state_then_name() {
+        let mut v = PagesView::new();
+        let begin = |id: &str, title: &str| Event::TestBegin {
+            test_id: id.into(),
+            title: title.into(),
+            title_path: vec![],
+            file: None,
+            line: None,
+            project: None,
+            worker_index: None,
+        };
+        let open = |page: &str, test: &str| Event::PageOpened {
+            page_id: page.into(),
+            test_id: Some(test.into()),
+            worker_index: None,
+            browser: None,
+            url: None,
+        };
+        let end = |id: &str, status| Event::TestEnd {
+            test_id: id.into(),
+            status,
+            duration_ms: None,
+            error: None,
+        };
+        let close = |page: &str| Event::PageClosed { page_id: page.into() };
+        let events = [
+            begin("t1", "zeta passes"),
+            begin("t2", "alpha fails"),
+            begin("t3", "Beta running"),
+            begin("t4", "alpha passes"),
+            begin("t5", "delta running"),
+            begin("t6", "beta times out"),
+            open("p1", "t1"),
+            open("p2", "t2"),
+            open("p3", "t3"),
+            open("p4", "t4"),
+            open("p5", "t5"),
+            open("p6", "t6"),
+            end("t1", TestStatus::Passed),
+            close("p1"),
+            end("t2", TestStatus::Failed),
+            close("p2"),
+            end("t4", TestStatus::Passed),
+            close("p4"),
+            end("t6", TestStatus::TimedOut),
+            close("p6"),
+        ];
+        for (i, e) in events.into_iter().enumerate() {
+            v.apply("r1", i as f64, e);
+        }
+        let order: Vec<&str> = v.ordered_pages().iter().map(|p| p.key.page_id.as_str()).collect();
+        // running: Beta, delta | failed: alpha fails, beta times out | complete: alpha passes, zeta
+        assert_eq!(order, ["p3", "p5", "p2", "p6", "p4", "p1"]);
+    }
+
+    #[test]
+    fn failure_heuristic() {
+        assert!(!looks_like_failure("Not implemented: Window's scrollTo() method"));
+        assert!(!looks_like_failure("(node:1) ExperimentalWarning: localStorage is not available"));
+        assert!(!looks_like_failure("      Tests  632 passed (632)"));
+        assert!(!looks_like_failure("  11 passed, 0 failed"));
+        assert!(looks_like_failure("  1 failed"));
+        assert!(looks_like_failure("Error: page.waitForURL: Test timeout of 30000ms exceeded."));
+        assert!(looks_like_failure(" × fails on purpose 117ms"));
+        assert!(looks_like_failure("AssertionError: expected 2 to be 3"));
     }
 }

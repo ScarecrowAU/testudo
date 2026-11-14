@@ -166,3 +166,35 @@ fn orphaned_running_run_is_marked_interrupted() {
 fn bytes_of(b: &[u8]) -> testudo_protocol::Bytes {
     testudo_protocol::Bytes::copy_from_slice(b)
 }
+
+#[test]
+fn late_test_result_after_exit_still_counts() {
+    use testudo_core::Hub;
+    use testudo_protocol::{Event, Message, TestStatus};
+
+    let (dir, _) = temp_store("late");
+    let hub = Hub::default();
+    let rec = Recorder::spawn(&dir, &hub, Retention::default()).unwrap();
+    let begin = |id: &str| Event::TestBegin {
+        test_id: id.into(),
+        title: id.into(),
+        title_path: vec![],
+        file: None,
+        line: None,
+        project: None,
+        worker_index: None,
+    };
+    let end = |id: &str| Event::TestEnd {
+        test_id: id.into(),
+        status: TestStatus::Passed,
+        duration_ms: None,
+        error: None,
+    };
+    for e in [begin("a"), begin("b"), end("a"), Event::ProcessExited { code: Some(0) }, end("b")] {
+        hub.publish("r1", Message::Event(e));
+    }
+    hub.close();
+    rec.join();
+    assert_eq!(Store::open(&dir).unwrap().run("r1").unwrap().unwrap().passed, 2);
+    std::fs::remove_dir_all(dir).unwrap();
+}

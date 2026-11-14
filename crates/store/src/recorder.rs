@@ -197,6 +197,16 @@ impl Writer {
                      WHERE run_id = ?1 AND test_id = ?2",
                     params![run_id, test_id, status, duration_ms, error, at],
                 )?;
+                // Safety net: a result that lands after the run was finalised
+                // must still be reflected in the summary.
+                c.execute(
+                    "UPDATE runs SET
+                        passed  = (SELECT COUNT(*) FROM tests WHERE run_id = ?1 AND status = 'passed'),
+                        failed  = (SELECT COUNT(*) FROM tests WHERE run_id = ?1 AND status IN ('failed', 'timedOut')),
+                        skipped = (SELECT COUNT(*) FROM tests WHERE run_id = ?1 AND status = 'skipped')
+                     WHERE id = ?1 AND status != 'running'",
+                    [run_id],
+                )?;
             }
             Event::PageOpened {
                 page_id,

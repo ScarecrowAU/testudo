@@ -22,7 +22,7 @@ use crate::view::{PagesView, status_icon};
 const SPEEDS: [f32; 6] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0];
 
 struct TestSpan {
-    /// One timeline lane per runner worker, so parallel tests don't overlap.
+    /// Timeline row; tests that overlap in time get different lanes.
     lane: usize,
     start: f64,
     end: f64,
@@ -46,8 +46,14 @@ pub struct Replay {
     /// Lazily opened per page; `None` once we know a page has no recording.
     frames: HashMap<String, Option<FrameIndex>>,
     shown: HashMap<String, usize>,
-    export: Option<(String, Receiver<Result<PathBuf, String>>)>,
-    pub status: Option<String>,
+    pub exporter: Exporter,
+}
+
+/// MP4 export of one page's recording, run on a background thread.
+#[derive(Default)]
+pub struct Exporter {
+    job: Option<(String, Receiver<Result<PathBuf, String>>)>,
+    status: Option<String>,
 }
 
 impl Replay {
@@ -63,20 +69,12 @@ impl Replay {
 
         let mut spans: Vec<TestSpan> = Vec::new();
         let mut open: HashMap<&str, usize> = HashMap::new();
-        let mut lane_of: HashMap<i32, usize> = HashMap::new();
         for (at, ev) in &events {
             match ev {
-                Event::TestBegin {
-                    test_id,
-                    title,
-                    worker_index,
-                    ..
-                } => {
+                Event::TestBegin { test_id, title, .. } => {
                     open.insert(test_id, spans.len());
-                    let next = lane_of.len();
-                    let lane = *lane_of.entry(worker_index.unwrap_or(0)).or_insert(next);
                     spans.push(TestSpan {
-                        lane,
+                        lane: 0,
                         start: *at,
                         end,
                         status: None,
@@ -93,6 +91,22 @@ impl Replay {
             }
         }
 
+        // Greedy interval packing: each test takes the first lane that is free
+        // when it starts. Worker indexes are no good here: Playwright assigns a
+        // new one whenever a worker restarts, so a serial run would fan out.
+        let mut lane_free_at: Vec<f64> = Vec::new();
+        for s in &mut spans {
+            s.lane = match lane_free_at.iter().position(|free| *free <= s.start) {
+                Some(i) => i,
+                None => {
+                    lane_free_at.push(0.0);
+                    lane_free_at.len() - 1
+                }
+            };
+            lane_free_at[s.lane] = s.end;
+        }
+        let lanes = lane_free_at.len().max(1);
+
         Ok(Self {
             run,
             events,
@@ -104,11 +118,10 @@ impl Replay {
             speed: 1.0,
             view: PagesView::new(),
             spans,
-            lanes: lane_of.len().max(1),
+            lanes,
             frames: HashMap::new(),
             shown: HashMap::new(),
-            export: None,
-            status: None,
+            exporter: Exporter::default(),
         })
     }
 
@@ -118,10 +131,12 @@ impl Replay {
             let keep_closed = self.view.keep_closed_pages;
             let selected = self.view.selected_page.take();
             let tab = self.view.inspector_tab;
+            let focus = self.view.focus.take();
             self.view = PagesView::new();
             self.view.keep_closed_pages = keep_closed;
             self.view.inspector_tab = tab;
             self.view.selected_page = selected;
+            self.view.focus = focus;
             self.cursor = 0;
             self.shown.clear();
         }
@@ -166,6 +181,15 @@ impl Replay {
         }
     }
 
+    /// Open a page's focus view with the whole run's events, at the replay time.
+    pub fn open_focus(&mut self, key: PageKey) {
+        let mut full = crate::model::Model::new();
+        for (at, ev) in &self.events {
+            full.apply(&self.run.id, *at, ev.clone());
+        }
+        self.view.open_focus(crate::focus::PageFocus::recorded(key, full, self.t));
+    }
+
     /// Advance playback. Call once per UI frame.
     pub fn tick(&mut self, ctx: &egui::Context, store: &Store) {
         if self.cursor == 0 {
@@ -180,19 +204,7 @@ impl Replay {
             self.seek(next, ctx, store);
             ctx.request_repaint();
         }
-        if let Some((name, rx)) = &self.export {
-            match rx.try_recv() {
-                Ok(Ok(path)) => {
-                    self.status = Some(format!("exported {}", path.display()));
-                    self.export = None;
-                }
-                Ok(Err(e)) => {
-                    self.status = Some(format!("export of {name} failed: {e}"));
-                    self.export = None;
-                }
-                Err(_) => ctx.request_repaint_after(std::time::Duration::from_millis(250)),
-            }
-        }
+        self.exporter.poll(ctx);
     }
 
     pub fn timeline_ui(&mut self, ui: &mut egui::Ui, store: &Store) {
@@ -225,9 +237,11 @@ impl Replay {
         });
 
         // Scrub bar with one lane of test spans per worker underneath.
-        const LANE_H: f32 = 10.0;
+        // Lanes thin out instead of growing past ~80px (Vitest runs pack many
+        // short parallel tests).
+        let lane_h = (80.0 / self.lanes as f32).clamp(2.0, 10.0);
         let width = ui.available_width();
-        let height = 14.0 + LANE_H * self.lanes as f32;
+        let height = 14.0 + lane_h * self.lanes as f32;
         let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click_and_drag());
         let painter = ui.painter_at(rect);
         let span = self.end - self.start;
@@ -235,10 +249,10 @@ impl Replay {
         painter.rect_filled(rect, 3.0, ui.visuals().extreme_bg_color);
         let mut hovered_span = None;
         for s in &self.spans {
-            let top = rect.top() + 14.0 + LANE_H * s.lane as f32;
+            let top = rect.top() + 14.0 + lane_h * s.lane as f32;
             let r = egui::Rect::from_min_max(
                 pos2(x_of(s.start), top + 1.0),
-                pos2(x_of(s.end).max(x_of(s.start) + 2.0), top + LANE_H - 1.0),
+                pos2(x_of(s.end).max(x_of(s.start) + 2.0), top + (lane_h - 1.0).max(1.0)),
             );
             let (_, color) = status_icon(s.status);
             painter.rect_filled(r, 2.0, color.gamma_multiply(0.6));
@@ -265,41 +279,52 @@ impl Replay {
             self.seek(self.start + frac * span, &ctx, store);
         }
     }
+}
 
-    /// Export button for the inspector header.
-    pub fn export_button(&mut self, ui: &mut egui::Ui, page: Option<&PageKey>, store: &Store) {
-        let Some(page) = page else { return };
-        let frames = store.frame_path(&page.run_id, &page.page_id);
-        if !frames.exists() {
-            ui.weak("(no recording)");
-            return;
+impl Exporter {
+    pub fn poll(&mut self, ctx: &egui::Context) {
+        let Some((name, rx)) = &self.job else { return };
+        match rx.try_recv() {
+            Ok(Ok(path)) => {
+                self.status = Some(format!("exported {}", path.display()));
+                self.job = None;
+            }
+            Ok(Err(e)) => {
+                self.status = Some(format!("export of {name} failed: {e}"));
+                self.job = None;
+            }
+            Err(_) => ctx.request_repaint_after(std::time::Duration::from_millis(250)),
         }
-        if self.export.is_some() {
-            ui.spinner();
-            ui.weak("exporting…");
-            return;
-        }
-        if ui.button("⬇ Export MP4").clicked() {
-            let out = store.exports_dir().join(format!("{}-{}.mp4", page.run_id, page.page_id));
-            let (tx, rx) = channel();
-            std::thread::spawn(move || {
-                let r = export_mp4(&frames, &out, &ExportOptions::default())
-                    .map(|_| out)
-                    .map_err(|e| format!("{e:#}"));
-                let _ = tx.send(r);
-            });
-            self.export = Some((page.page_id.clone(), rx));
-            self.status = None;
+    }
+
+    /// Export controls for the inspector's tab row.
+    pub fn ui(&mut self, ui: &mut egui::Ui, page: Option<&PageKey>, store: &Store) {
+        if let Some(page) = page {
+            let frames = store.frame_path(&page.run_id, &page.page_id);
+            if !frames.exists() {
+                ui.weak("(no recording)");
+            } else if self.job.is_some() {
+                ui.spinner();
+                ui.weak("exporting…");
+            } else if ui.button("⬇ Export MP4").clicked() {
+                let out = store.exports_dir().join(format!("{}-{}.mp4", page.run_id, page.page_id));
+                let (tx, rx) = channel();
+                std::thread::spawn(move || {
+                    let r = export_mp4(&frames, &out, &ExportOptions::default())
+                        .map(|_| out)
+                        .map_err(|e| format!("{e:#}"));
+                    let _ = tx.send(r);
+                });
+                self.job = Some((page.page_id.clone(), rx));
+                self.status = None;
+            }
         }
         if ui.small_button("📂").on_hover_text("Open exports folder").clicked() {
             let _ = std::fs::create_dir_all(store.exports_dir());
             let _ = std::process::Command::new("xdg-open").arg(store.exports_dir()).spawn();
         }
-    }
-
-    pub fn status_ui(&self, ui: &mut egui::Ui) {
         if let Some(s) = &self.status {
-            ui.label(RichText::new(s).small());
+            ui.add(egui::Label::new(RichText::new(s).small()).truncate());
         }
     }
 }

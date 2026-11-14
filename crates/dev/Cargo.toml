@@ -1,0 +1,12 @@
+[package]
+name = "testudo-dev"
+description = "Dev loop: rebuild Testudo on change and restart the GUI when the build succeeds"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

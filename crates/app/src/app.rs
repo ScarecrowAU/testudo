@@ -4,7 +4,8 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use egui::{Color32, RichText};
-use testudo_core::{Orchestrator, RunHandle, RunId, RunSpec, RunnerKind, now_ms};
+use testudo_core::discover::{Suite, discover};
+use testudo_core::{Orchestrator, RunHandle, RunId, RunSpec, now_ms};
 use testudo_protocol::Event;
 use testudo_store::{RunRow, Store};
 
@@ -13,13 +14,6 @@ use crate::replay::Replay;
 use crate::view::{PagesView, RunAction};
 
 const HISTORY_LIMIT: usize = 200;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum KindChoice {
-    Playwright,
-    Vitest,
-    Command,
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -41,15 +35,25 @@ pub struct TestudoApp {
     replay: Option<Replay>,
     error: Option<String>,
 
-    // new-run form
-    kind: KindChoice,
+    // project + discovered suites
+    rt: tokio::runtime::Handle,
+    /// Native folder picker in flight; yields the chosen dir (None = cancelled).
+    folder_pick: Option<Receiver<Option<PathBuf>>>,
+    want_folder_pick: bool,
     project_dir: String,
-    program: String,
+    suites: Vec<Suite>,
+    scanned: Option<PathBuf>,
     args: String,
 }
 
 impl TestudoApp {
-    pub fn new(orchestrator: Orchestrator, rx: Receiver<UiMsg>, default_dir: PathBuf, store: Option<Store>) -> Self {
+    pub fn new(
+        orchestrator: Orchestrator,
+        rx: Receiver<UiMsg>,
+        rt: tokio::runtime::Handle,
+        default_dir: PathBuf,
+        store: Option<Store>,
+    ) -> Self {
         let mut app = Self {
             orchestrator,
             rx,
@@ -61,12 +65,22 @@ impl TestudoApp {
             refresh_history_at: None,
             replay: None,
             error: None,
-            kind: KindChoice::Playwright,
+            rt,
+            folder_pick: None,
+            want_folder_pick: false,
             project_dir: default_dir.display().to_string(),
-            program: String::new(),
+            suites: Vec::new(),
+            scanned: None,
             args: String::new(),
         };
         app.refresh_history();
+        app.scan();
+        // Test hook (debug builds only): open the folder picker at startup, for
+        // exercising the dialog without synthesising input.
+        #[cfg(debug_assertions)]
+        if std::env::var_os("TESTUDO_DEBUG_OPEN_PICKER").is_some() {
+            app.want_folder_pick = true;
+        }
         app
     }
 
@@ -75,13 +89,71 @@ impl TestudoApp {
         self.args = args.join(" ");
     }
 
-    /// Start a run immediately with the default project dir (`--run` flag).
-    pub fn autorun(&mut self, kind: &str) {
-        self.kind = match kind {
-            "vitest" => KindChoice::Vitest,
-            _ => KindChoice::Playwright,
-        };
-        self.start_run();
+    /// Start the discovered suites matching `filter` (`all`, `playwright`,
+    /// `vitest`, or part of a suite name) (`--run` flag).
+    pub fn autorun(&mut self, filter: &str) {
+        let chosen: Vec<Suite> = self
+            .suites
+            .iter()
+            .filter(|s| s.runnable() && s.matches(filter))
+            .cloned()
+            .collect();
+        if chosen.is_empty() {
+            self.error = Some(format!("--run {filter}: no runnable suite matches"));
+        }
+        for s in &chosen {
+            self.start_suite(s);
+        }
+    }
+
+    /// Open the platform's folder picker (KDE/GNOME via the XDG desktop portal,
+    /// Finder on macOS, the shell dialog on Windows), attached to our window.
+    /// The dialog is created here on the UI thread (required on macOS) and
+    /// awaited on the runtime so the UI keeps painting.
+    fn open_folder_picker(&mut self, frame: &eframe::Frame, ctx: &egui::Context) {
+        let mut dialog = rfd::AsyncFileDialog::new()
+            .set_title("Choose a project directory")
+            .set_parent(frame);
+        let current = PathBuf::from(expand_tilde(self.project_dir.trim()));
+        if current.is_dir() {
+            dialog = dialog.set_directory(&current);
+        }
+        let pick = dialog.pick_folder();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        self.rt.spawn(async move {
+            let chosen = pick.await.map(|h| h.path().to_owned());
+            let _ = tx.send(chosen);
+            ctx.request_repaint();
+        });
+        self.folder_pick = Some(rx);
+    }
+
+    fn poll_folder_picker(&mut self) {
+        let Some(rx) = &self.folder_pick else { return };
+        match rx.try_recv() {
+            Ok(Some(dir)) => {
+                self.folder_pick = None;
+                self.project_dir = dir.display().to_string();
+                self.scan();
+                self.mode = Mode::Live;
+            }
+            Ok(None) | Err(std::sync::mpsc::TryRecvError::Disconnected) => self.folder_pick = None,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
+    fn scan(&mut self) {
+        let dir = PathBuf::from(expand_tilde(self.project_dir.trim()));
+        if !dir.is_dir() {
+            self.suites.clear();
+            self.scanned = None;
+            self.error = Some(format!("{} is not a directory", dir.display()));
+            return;
+        }
+        self.suites = discover(&dir);
+        self.scanned = Some(dir);
+        self.error = None;
     }
 
     /// Open the history view on a run (`--replay` flag, Replay buttons).
@@ -108,6 +180,17 @@ impl TestudoApp {
         }
     }
 
+    /// Open the focus view on a page of the open replay (`--focus`).
+    pub fn focus_replay_page(&mut self, page_id: &str) {
+        if let Some(replay) = &mut self.replay {
+            let key = crate::model::PageKey {
+                run_id: replay.run.id.clone(),
+                page_id: page_id.to_owned(),
+            };
+            replay.open_focus(key);
+        }
+    }
+
     fn refresh_history(&mut self) {
         self.refresh_history_at = None;
         if let Some(store) = &self.store {
@@ -127,7 +210,20 @@ impl TestudoApp {
                         // Give the recorder a moment to commit the final status.
                         self.refresh_history_at = Some(Instant::now() + Duration::from_millis(500));
                     }
+                    #[cfg(debug_assertions)]
+                    let opened = match &event {
+                        Event::PageOpened { page_id, .. } => Some(page_id.clone()),
+                        _ => None,
+                    };
                     self.live.apply(&run_id, at, event);
+                    // Test hook (debug builds only): focus the first page that opens.
+                    #[cfg(debug_assertions)]
+                    if let Some(page_id) = opened
+                        && self.live.focus.is_none()
+                        && std::env::var_os("TESTUDO_DEBUG_FOCUS_FIRST").is_some()
+                    {
+                        self.live.open_live_focus(crate::model::PageKey { run_id: run_id.clone(), page_id });
+                    }
                 }
                 UiMsg::Frame { key, at, image } => self.live.model.apply_frame(ctx, &key, at, image),
             }
@@ -139,29 +235,9 @@ impl TestudoApp {
         }
     }
 
-    fn start_run(&mut self) {
-        let kind = match self.kind {
-            KindChoice::Playwright => RunnerKind::Playwright,
-            KindChoice::Vitest => RunnerKind::Vitest,
-            KindChoice::Command => RunnerKind::Command {
-                program: self.program.trim().to_owned(),
-            },
-        };
-        let cwd = PathBuf::from(self.project_dir.trim());
-        let label = format!(
-            "{} · {}",
-            kind.name(),
-            cwd.canonicalize()
-                .ok()
-                .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
-                .unwrap_or_default()
-        );
-        let spec = RunSpec {
-            label,
-            kind,
-            cwd,
-            args: self.args.split_whitespace().map(str::to_owned).collect(),
-        };
+    fn start_suite(&mut self, suite: &Suite) {
+        let args = self.args.split_whitespace().map(str::to_owned).collect();
+        let Some(spec) = RunSpec::for_suite(suite, args) else { return };
         match self.orchestrator.start(spec) {
             Ok(handle) => {
                 self.live.selected_run = Some(handle.id.clone());
@@ -169,7 +245,49 @@ impl TestudoApp {
                 self.mode = Mode::Live;
                 self.error = None;
             }
-            Err(e) => self.error = Some(format!("{e:#}")),
+            Err(e) => self.error = Some(format!("{}: {e:#}", suite.name)),
+        }
+    }
+
+    fn suites_ui(&mut self, ui: &mut egui::Ui) {
+        let runnable = self.suites.iter().filter(|s| s.runnable()).count();
+        let mut start: Vec<Suite> = Vec::new();
+        egui::CollapsingHeader::new(RichText::new(format!("Suites ({runnable})")).strong())
+            .id_salt("suites")
+            .default_open(true)
+            .show(ui, |ui| {
+                if self.scanned.is_some() && self.suites.is_empty() {
+                    ui.weak("No Playwright or Vitest suites found here.");
+                }
+                for s in &self.suites {
+                    ui.horizontal(|ui| {
+                        let run = ui.add_enabled(s.runnable(), egui::Button::new("▶").small());
+                        if run.clicked() {
+                            start.push(s.clone());
+                        }
+                        let mut text = RichText::new(&s.name);
+                        if !s.runnable() {
+                            text = text.weak();
+                        }
+                        let label = ui.add(egui::Label::new(text).truncate());
+                        if let Some(v) = s.tool.as_ref().and_then(|t| t.version.as_deref()) {
+                            ui.weak(v);
+                        }
+                        if !s.warnings.is_empty() {
+                            ui.colored_label(Color32::GOLD, "⚠");
+                        }
+                        let mut hover = vec![s.id.clone()];
+                        hover.extend(s.problems.iter().map(|p| format!("✘ {p}")));
+                        hover.extend(s.warnings.iter().map(|w| format!("⚠ {w}")));
+                        label.on_hover_text(hover.join("\n"));
+                    });
+                }
+                if runnable > 1 && ui.button(format!("▶ Run all {runnable}")).clicked() {
+                    start.extend(self.suites.iter().filter(|s| s.runnable()).cloned());
+                }
+            });
+        for s in &start {
+            self.start_suite(s);
         }
     }
 
@@ -180,25 +298,32 @@ impl TestudoApp {
             ui.selectable_value(&mut self.mode, Mode::Live, "● Live");
             ui.selectable_value(&mut self.mode, Mode::History, "🕘 History");
             ui.separator();
-            egui::ComboBox::from_id_salt("kind")
-                .selected_text(match self.kind {
-                    KindChoice::Playwright => "Playwright",
-                    KindChoice::Vitest => "Vitest / Storybook",
-                    KindChoice::Command => "Command",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.kind, KindChoice::Playwright, "Playwright");
-                    ui.selectable_value(&mut self.kind, KindChoice::Vitest, "Vitest / Storybook");
-                    ui.selectable_value(&mut self.kind, KindChoice::Command, "Command");
-                });
-            if self.kind == KindChoice::Command {
-                ui.add(egui::TextEdit::singleline(&mut self.program).hint_text("program").desired_width(120.0));
+            let picking = self.folder_pick.is_some();
+            if ui
+                .add_enabled(!picking, egui::Button::new("📂"))
+                .on_hover_text("Choose a project directory")
+                .clicked()
+            {
+                self.want_folder_pick = true;
             }
-            ui.add(egui::TextEdit::singleline(&mut self.project_dir).hint_text("project dir").desired_width(320.0));
-            ui.add(egui::TextEdit::singleline(&mut self.args).hint_text("args").desired_width(200.0));
-            if ui.button("▶ Run").clicked() {
-                self.start_run();
+            if picking {
+                ui.spinner();
             }
+            let dir = ui.add(
+                egui::TextEdit::singleline(&mut self.project_dir)
+                    .hint_text("project directory")
+                    .desired_width(380.0),
+            );
+            let entered = dir.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if entered || ui.button("⟳ Scan").on_hover_text("Find test suites in this directory").clicked() {
+                self.scan();
+                self.mode = Mode::Live;
+            }
+            ui.add(
+                egui::TextEdit::singleline(&mut self.args)
+                    .hint_text("extra runner args")
+                    .desired_width(200.0),
+            );
             if self.mode == Mode::Live {
                 ui.separator();
                 ui.checkbox(&mut self.live.keep_closed_pages, "Keep closed pages");
@@ -218,21 +343,30 @@ impl TestudoApp {
             .resizable(true)
             .default_size(320.0)
             .show(ui, |ui| {
+                self.suites_ui(ui);
+                ui.separator();
                 ui.heading("Runs");
                 if self.live.model.runs.is_empty() {
-                    ui.weak("No runs yet. Pick a runner and project above.");
+                    ui.weak("No runs yet. Press ▶ on a suite.");
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     action = self.live.runs_ui(ui, Some(&mut self.handles), self.store.as_ref());
                 });
             });
+        let inspector_max = (ui.available_height() * 0.6).max(120.0);
         egui::Panel::bottom("live-inspector")
             .resizable(true)
             .default_size(220.0)
+            // Long runner output must not push the timeline and pages off screen.
+            .size_range(80.0..=inspector_max)
             .show(ui, |ui| self.live.inspector_ui(ui, |_, _| {}));
         egui::CentralPanel::default().show(ui, |ui| {
-            self.live.pages_ui(ui, "Live browser pages appear here as suites open them.");
+            self.live
+                .pages_ui(ui, "Live browser pages appear here as suites open them.", self.store.as_ref());
         });
+        if let Some(key) = self.live.focus_request.take() {
+            self.live.open_live_focus(key);
+        }
         if let Some(RunAction::OpenReplay(id)) = action {
             self.open_replay(&id);
         }
@@ -303,21 +437,28 @@ impl TestudoApp {
             });
 
         if let Some(replay) = &mut self.replay {
+            let inspector_max = (ui.available_height() * 0.6).max(120.0);
             egui::Panel::bottom("history-inspector")
                 .resizable(true)
                 .default_size(220.0)
+            // Long runner output must not push the timeline and pages off screen.
+            .size_range(80.0..=inspector_max)
                 .show(ui, |ui| {
-                    let mut selected_page = None;
-                    replay.view.inspector_ui(ui, |_, page| selected_page = page.cloned());
-                    ui.horizontal(|ui| {
-                        replay.export_button(ui, selected_page.as_ref(), store);
-                        replay.status_ui(ui);
+                    // Export lives in the tab row: anything drawn after the inspector
+                    // would overflow the panel (its lists fill the remaining height).
+                    let Replay { view, exporter, .. } = replay;
+                    view.inspector_ui(ui, |ui, page| {
+                        ui.separator();
+                        exporter.ui(ui, page, store);
                     });
                 });
             egui::CentralPanel::default().show(ui, |ui| {
                 replay.timeline_ui(ui, store);
                 ui.separator();
-                replay.view.pages_ui(ui, "No browser pages open at this point in the run.");
+                replay.view.pages_ui(ui, "No browser pages open at this point in the run.", Some(store));
+                if let Some(key) = replay.view.focus_request.take() {
+                    replay.open_focus(key);
+                }
             });
         } else {
             egui::CentralPanel::default().show(ui, |ui| {
@@ -335,10 +476,14 @@ impl TestudoApp {
 }
 
 impl eframe::App for TestudoApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.drain_messages(&ctx);
+        self.poll_folder_picker();
         egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
+        if std::mem::take(&mut self.want_folder_pick) {
+            self.open_folder_picker(frame, &ctx);
+        }
         match self.mode {
             Mode::Live => self.live_ui(ui),
             Mode::History => self.history_ui(ui),
@@ -374,4 +519,11 @@ fn local_offset_secs() -> i64 {
 #[cfg(not(unix))]
 fn local_offset_secs() -> i64 {
     0
+}
+
+fn expand_tilde(p: &str) -> String {
+    match (p.strip_prefix("~/"), std::env::var("HOME")) {
+        (Some(rest), Ok(home)) => format!("{home}/{rest}"),
+        _ => p.to_owned(),
+    }
 }

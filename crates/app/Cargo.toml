@@ -7,7 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "testudo"
+name = "testudo-egui"
 path = "src/main.rs"
 
 [dependencies]
@@ -19,6 +19,7 @@ eframe.workspace = true
 egui.workspace = true
 egui_tiles.workspace = true
 image.workspace = true
+rfd.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

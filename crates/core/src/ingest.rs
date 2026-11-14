@@ -1,10 +1,14 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::BytesMut;
 use testudo_protocol::{Event, Message, decode};
 use tokio::io::AsyncReadExt;
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::Notify;
 use tracing::{debug, warn};
 
 use crate::hub::Hub;
@@ -17,6 +21,50 @@ use crate::hub::Hub;
 /// transport already handles both via `net.connect(path)`).
 pub struct IngestServer {
     path: PathBuf,
+    connections: Connections,
+}
+
+/// Open adapter connections, so a run's exit can be announced only after every
+/// message its processes sent has been published. Without this, under load the
+/// core's `ProcessExited` can overtake a reporter's final `testEnd`s.
+#[derive(Clone, Default)]
+pub struct Connections {
+    inner: Arc<(Mutex<ConnState>, Notify)>,
+}
+
+#[derive(Default)]
+struct ConnState {
+    /// Accepted but not yet identified by `Hello`: could belong to any run.
+    pending: usize,
+    by_run: HashMap<String, usize>,
+}
+
+impl Connections {
+    fn update(&self, f: impl FnOnce(&mut ConnState)) {
+        f(&mut self.inner.0.lock().unwrap());
+        self.inner.1.notify_waiters();
+    }
+
+    fn idle(&self, run_id: &str) -> bool {
+        let s = self.inner.0.lock().unwrap();
+        s.pending == 0 && s.by_run.get(run_id).is_none_or(|n| *n == 0)
+    }
+
+    /// Wait until `run_id` has no open (or unidentified) connections, up to `timeout`.
+    pub async fn drained(&self, run_id: &str, timeout: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        // The kernel may still hold a connection we have not accepted yet.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        loop {
+            let notified = self.inner.1.notified();
+            if self.idle(run_id) {
+                return true;
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                return self.idle(run_id);
+            }
+        }
+    }
 }
 
 impl IngestServer {
@@ -31,15 +79,24 @@ impl IngestServer {
         let listener = UnixListener::bind(&path)
             .with_context(|| format!("binding ingest socket at {}", path.display()))?;
 
+        let connections = Connections::default();
+        let conns = connections.clone();
         tokio::spawn(async move {
             loop {
                 match listener.accept().await {
                     Ok((stream, _)) => {
                         let hub = hub.clone();
+                        let conns = conns.clone();
+                        conns.update(|s| s.pending += 1);
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(stream, hub).await {
+                            let mut run_id = None;
+                            if let Err(e) = handle_connection(stream, hub, &conns, &mut run_id).await {
                                 debug!("adapter connection ended: {e:#}");
                             }
+                            conns.update(|s| match run_id {
+                                Some(id) => *s.by_run.entry(id).or_default() -= 1,
+                                None => s.pending -= 1,
+                            });
                         });
                     }
                     Err(e) => warn!("ingest accept failed: {e}"),
@@ -47,7 +104,11 @@ impl IngestServer {
             }
         });
 
-        Ok(Self { path })
+        Ok(Self { path, connections })
+    }
+
+    pub fn connections(&self) -> Connections {
+        self.connections.clone()
     }
 
     pub fn socket_path(&self) -> &Path {
@@ -92,9 +153,13 @@ fn pid_alive(_pid: i32) -> bool {
     true
 }
 
-async fn handle_connection(mut stream: UnixStream, hub: Hub) -> Result<()> {
+async fn handle_connection(
+    mut stream: UnixStream,
+    hub: Hub,
+    conns: &Connections,
+    run_id: &mut Option<String>,
+) -> Result<()> {
     let mut buf = BytesMut::with_capacity(256 * 1024);
-    let mut run_id: Option<String> = None;
 
     loop {
         loop {
@@ -103,7 +168,12 @@ async fn handle_connection(mut stream: UnixStream, hub: Hub) -> Result<()> {
                     if run_id.is_none() {
                         match &msg {
                             Message::Event(Event::Hello { run_id: Some(id), .. }) => {
-                                run_id = Some(id.clone())
+                                // Move from pending to the run in one step.
+                                conns.update(|s| {
+                                    s.pending -= 1;
+                                    *s.by_run.entry(id.clone()).or_default() += 1;
+                                });
+                                *run_id = Some(id.clone());
                             }
                             _ => anyhow::bail!("first message was not Hello with a runId"),
                         }

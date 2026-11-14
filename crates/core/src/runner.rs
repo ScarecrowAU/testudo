@@ -51,7 +51,22 @@ pub struct RunSpec {
     pub label: String,
     pub kind: RunnerKind,
     pub cwd: PathBuf,
+    /// Explicit config file (`-c` for Playwright, `--config` for Vitest).
+    pub config: Option<PathBuf>,
     pub args: Vec<String>,
+}
+
+impl RunSpec {
+    /// The spec for running a discovered suite.
+    pub fn for_suite(suite: &crate::discover::Suite, args: Vec<String>) -> Option<Self> {
+        Some(Self {
+            label: suite.name.clone(),
+            kind: suite.kind.runner()?,
+            cwd: suite.dir.clone(),
+            config: suite.config.clone(),
+            args,
+        })
+    }
 }
 
 /// How long a cancelled run gets to shut down after SIGINT before escalating to
@@ -81,6 +96,7 @@ struct Inner {
     socket: PathBuf,
     adapters: PathBuf,
     rt: tokio::runtime::Handle,
+    connections: crate::ingest::Connections,
     next_id: AtomicU64,
     /// Runs whose process has not exited yet, with their cancel switch.
     active: Mutex<HashMap<RunId, Arc<watch::Sender<bool>>>>,
@@ -88,13 +104,14 @@ struct Inner {
 }
 
 impl Orchestrator {
-    pub fn new(hub: Hub, socket: PathBuf, adapters: PathBuf, rt: tokio::runtime::Handle) -> Self {
+    pub fn new(ingest: &crate::IngestServer, hub: Hub, adapters: PathBuf, rt: tokio::runtime::Handle) -> Self {
         Self {
             inner: Arc::new(Inner {
                 hub,
-                socket,
+                socket: ingest.socket_path().to_owned(),
                 adapters,
                 rt,
+                connections: ingest.connections(),
                 next_id: AtomicU64::new(1),
                 active: Mutex::new(HashMap::new()),
                 run_exited: Notify::new(),
@@ -151,7 +168,8 @@ impl Orchestrator {
             .canonicalize()
             .with_context(|| format!("project dir {}", spec.cwd.display()))?;
 
-        let Launch { program, args, envs } = build_command(&spec.kind, &cwd, &spec.args, &inner.adapters);
+        let Launch { program, args, envs, note } =
+            build_command(&spec.kind, &cwd, spec.config.as_deref(), &spec.args, &inner.adapters)?;
 
         let preload = inner.adapters.join("preload.mjs");
         let mut node_options = format!("--import {}", file_url(&preload));
@@ -161,7 +179,7 @@ impl Orchestrator {
 
         // Honour the project's .nvmrc/.node-version. Reported in the run output so
         // a version mismatch is visible rather than silent.
-        let mut notes = Vec::new();
+        let mut notes: Vec<String> = note.into_iter().collect();
         let mut path_env = std::env::var_os("PATH").unwrap_or_default();
         if !matches!(spec.kind, RunnerKind::Command { .. }) {
             match crate::node_env::resolve(&cwd) {
@@ -249,6 +267,11 @@ impl Orchestrator {
                     procs::signal_survivors(&snapshot, pgid, Sig::Kill);
                 }
             }
+            // Announce the exit only after everything the run's processes sent
+            // has been published, so consumers see its final results first.
+            if !orch.inner.connections.drained(&run_id, Duration::from_secs(3)).await {
+                warn!(run = %run_id, "adapter connections still open after exit");
+            }
             let code = status.ok().and_then(|s| s.code());
             hub.publish(&run_id, Message::Event(Event::ProcessExited { code }));
             orch.inner.active.lock().unwrap().remove(&run_id);
@@ -263,48 +286,82 @@ struct Launch {
     program: String,
     args: Vec<String>,
     envs: Vec<(String, String)>,
+    note: Option<String>,
 }
 
-fn build_command(kind: &RunnerKind, cwd: &Path, user_args: &[String], adapters: &Path) -> Launch {
+fn build_command(
+    kind: &RunnerKind,
+    cwd: &Path,
+    config: Option<&Path>,
+    user_args: &[String],
+    adapters: &Path,
+) -> Result<Launch> {
+    let user_config = user_args
+        .iter()
+        .any(|a| a == "-c" || a.starts_with("--config"));
+    let config = config.filter(|_| !user_config);
     match kind {
         RunnerKind::Playwright => {
-            let (program, mut args) = node_bin(cwd, "playwright");
-            args.push("test".into());
+            let (program, note) = local_bin(cwd, "playwright", &["@playwright/test", "playwright"])?;
+            let mut args = vec!["test".to_owned()];
+            if let Some(c) = config {
+                args.extend(["-c".into(), c.display().to_string()]);
+            }
             args.extend(user_args.iter().cloned());
             let reporter = adapters.join("playwright-reporter.mjs").display().to_string();
-            Launch {
+            Ok(Launch {
                 program,
                 args,
                 envs: vec![("PW_TEST_REPORTER".into(), reporter)],
-            }
+                note,
+            })
         }
         RunnerKind::Vitest => {
-            let (program, mut args) = node_bin(cwd, "vitest");
+            let (program, note) = local_bin(cwd, "vitest", &["vitest"])?;
+            let mut args = Vec::new();
             let subcommands = ["run", "watch", "dev", "related", "bench"];
             if !user_args.first().is_some_and(|a| subcommands.contains(&a.as_str())) {
                 args.push("run".into());
             }
+            if let Some(c) = config {
+                args.push(format!("--config={}", c.display()));
+            }
             args.push("--reporter=default".into());
             args.push(format!("--reporter={}", adapters.join("vitest-reporter.mjs").display()));
             args.extend(user_args.iter().cloned());
-            Launch { program, args, envs: vec![] }
+            Ok(Launch {
+                program,
+                args,
+                envs: vec![],
+                note,
+            })
         }
-        RunnerKind::Command { program } => Launch {
+        RunnerKind::Command { program } => Ok(Launch {
             program: program.clone(),
             args: user_args.to_vec(),
             envs: vec![],
-        },
+            note: None,
+        }),
     }
 }
 
-/// Prefer the project's local binary; fall back to `npx`.
-fn node_bin(cwd: &Path, name: &str) -> (String, Vec<String>) {
-    let local = cwd.join("node_modules/.bin").join(name);
-    if local.exists() {
-        (local.display().to_string(), vec![])
-    } else {
-        ("npx".into(), vec![name.into()])
-    }
+/// The project's own runner binary (nearest `node_modules/.bin` upward), with a
+/// note naming the version. Never falls back to `npx`, which would silently
+/// download whatever version is latest.
+fn local_bin(cwd: &Path, name: &str, pkgs: &[&str]) -> Result<(String, Option<String>)> {
+    let Some(bin) = crate::discover::find_bin(cwd, name) else {
+        anyhow::bail!(
+            "{name} is not installed in {} (no node_modules/.bin/{name} there or above); \
+             run your package manager's install, or point Testudo at the directory that has it",
+            cwd.display()
+        );
+    };
+    let version = pkgs
+        .iter()
+        .find_map(|p| crate::discover::package_version(cwd, p))
+        .unwrap_or_else(|| "?".into());
+    let note = format!("[testudo] {name} {version} ({})", bin.display());
+    Ok((bin.display().to_string(), Some(note)))
 }
 
 fn file_url(path: &Path) -> String {

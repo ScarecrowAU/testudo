@@ -7,7 +7,7 @@ Current targets: Playwright, plus Vitest browser mode (which covers Storybook's 
 ## How it works
 
 ```
- testudo (Rust, egui)                       user's project (untouched)
+ testudo (Rust, gpui)                       user's project (untouched)
 ┌──────────────────────────┐   spawn    ┌──────────────────────────────────────┐
 │ Orchestrator ────────────┼──────────▶ │ playwright test / vitest run         │
 │                          │  env:      │   reporter  ◀─ PW_TEST_REPORTER /    │
@@ -37,30 +37,75 @@ The preload hooks `playwright-core` through its client instrumentation (`runAfte
 | `crates/protocol` | Wire format: length-prefixed JSON events and binary JPEG frames. Mirrored in `adapters/js/transport.mjs`. |
 | `crates/core` | Orchestrator (spawn, process-group cancel), ingest socket, hub. |
 | `crates/store` | Run history (SQLite) and frame recordings; `Recorder` hub subscriber; retention; MP4 export. |
-| `crates/app` | `testudo` GUI: egui + egui_tiles. Live view, plus History view with timeline replay. |
+| `crates/ui` | `testudo` GUI on gpui (via gpui-kit). Live view, focus view, History with timeline replay. |
+| `crates/app` | Previous egui GUI, built as `testudo-egui`; kept until the gpui UI is confirmed, then removed. |
 | `crates/cli` | `testudo-cli`: headless runs (recorded), history, show, export, prune. |
 | `adapters/js` | Zero-dependency Node adapters shipped with Testudo. |
 | `examples/` | Playwright and Vitest-browser demo projects for smoke testing. |
 
-## Running
+## Install
+
+```sh
+make install                     # release build into ~/.local (bin/, lib/testudo/adapters/, desktop entry)
+make install PREFIX=/usr/local   # system-wide (run with sudo)
+make uninstall                   # removes the install; run history is kept
+```
+
+Needs a Rust toolchain; ffmpeg is optional (MP4 export). `make help` lists the other targets (`test`, `lint`, `clean`).
+
+## Developing
+
+```sh
+make dev                                         # rebuild on change, restart the GUI
+make dev ARGS="~/dev/some-app --run playwright"  # args are passed to testudo
+```
+
+The app restarts only when the build succeeds; a compile error keeps the current window. Edits made while a build is running cancel it and rebuild from the latest state, so there is one restart per settled change. Restarts close the app gracefully (active runs are stopped cleanly). Adapter edits (`adapters/js`) need no restart; each run loads them fresh. Closing the window ends the loop.
+
+## Running from source
 
 ```sh
 # demos need deps + browsers once
 (cd examples/playwright-demo && npm install && npx playwright install chromium-headless-shell)
 (cd examples/vitest-browser-demo && npm install)
 
-cargo run -p testudo-app -- examples/playwright-demo --run playwright   # GUI, auto-start a run
-cargo run -p testudo-app -- --replay <run-id> --at 1.5                   # GUI, open a recorded run at 1.5s
-cargo run -p testudo-cli -- run vitest examples/vitest-browser-demo      # headless, recorded
+cargo run -p testudo-ui -- ~/dev/my-repo                  # GUI: lists the suites found in the repo
+cargo run -p testudo-ui -- ~/dev/my-repo --run all        # ...and starts them all
+cargo run -p testudo-ui -- --replay <run-id> --at 1.5     # open a recorded run at 1.5s
+cargo run -p testudo-cli -- suites ~/dev/my-repo          # list discovered suites
+cargo run -p testudo-cli -- run ~/dev/my-repo             # run every runnable suite, recorded
+cargo run -p testudo-cli -- run storybook ~/dev/my-repo   # only suites matching a filter
 cargo run -p testudo-cli -- history
 cargo run -p testudo-cli -- export <run-id> <page-id> out.mp4
 ```
 
-`--run` is optional; the top bar starts runs of any kind against any directory, and several can run at once. Arguments after `--` go to the runner, e.g. `testudo <dir> --run playwright -- -c playwright.storybook.config.ts`.
+Filters (`--run` in the GUI, positional in the CLI) match `all`, a runner (`playwright`, `vitest`) or part of a suite name or config path. Arguments after `--` go to every started runner.
+
+## Suite discovery
+
+Point Testudo at any directory, including a monorepo root. It walks the tree (skipping `node_modules`, build output and hidden dirs) and lists:
+
+- each `playwright*.config.*` as a Playwright suite (`playwright.storybook.config.ts` is its own suite);
+- Vitest configs and workspaces, and `vite.config.*` files with a `test` block (configs inside a Vitest workspace belong to the workspace);
+- Go modules, shown as not yet supported.
+
+Every suite runs from its own directory with its own runner: the nearest `node_modules/.bin/<runner>` walking upward, so apps pinned to different Playwright versions each use theirs. The version is shown per suite, and a Playwright suite whose Chromium build is missing from the browser cache gets a warning. Testudo never falls back to `npx`, which would silently fetch whatever version is latest; a suite without an install is listed as not runnable, with the reason.
+
+Running several suites at once on one machine can make timing-sensitive tests flaky (CPU contention); per-test history flags tests that both pass and fail.
 
 ## Stopping runs
 
 Stop (button), closing the window, Ctrl+C, SIGTERM and SIGHUP all stop runs the way a terminal would: SIGINT to the runner's process group so it runs its own teardown (Playwright stops its `webServer`, reporters flush), escalating to SIGTERM after 5s and SIGKILL 2s later. Helpers that left the process group (Playwright starts `webServer` detached) are found from a `/proc` snapshot taken when the stop began and are cleaned up too, matched by pid and start time. The recorder then writes each run's final status before Testudo exits. A second signal to the GUI exits immediately. Sockets left by a crashed Testudo are removed on next start.
+
+## Watching and scrubbing a page
+
+Click any page pane to open it large:
+
+- **Running page**: follows the browser live (● LIVE). Scroll back to drop into what has been recorded so far; ● LIVE returns. If the page closes while you watch, it becomes a recording.
+- **Finished page, or any page in History**: scrub the recording. Wheel = scrub, Shift+wheel or ←/→ = one frame, Space = play/pause, Esc = back to the grid. The scrub bar marks requests (ticks), navigations (blue) and console errors (red).
+- **Network and Console tabs sync to the scrub time**: every row for the page is listed, rows that have not started yet are faded, in-flight requests are blue, and clicking a row jumps there.
+
+`testudo --replay <run-id> --at <secs> --focus <page-id>` opens straight into a page (page ids are listed by `testudo-cli show <run-id>`).
 
 ## Recording and history
 
@@ -89,6 +134,14 @@ A real pnpm monorepo app (React, Vite, Playwright 1.60, Vitest 4 in jsdom, Story
 - Storybook suite (`-c playwright.storybook.config.ts`, 16 workers): 36 tests, a live pane per story, with contexts created manually through `browser.newContext()` still instrumented and the project's own Argos reporter unaffected.
 - Backend e2e suite with the backend offline: the suite's own skips recorded correctly.
 - Project working tree unchanged after every run.
+
+## GUI notes (gpui)
+
+The GUI uses gpui through gpui-kit, which pins a weekly snapshot of Zed's in-tree gpui (`gpui-pre`). Expect API changes when upgrading it; pin and upgrade deliberately.
+
+gpui keeps every image it has drawn in a GPU texture atlas until `window.drop_image` is called. Streaming screencast frames without freeing replaced ones leaks GPU memory fast (measured about 128 MB/s at 30 fps). All frame replacement in `crates/ui` hands the old frame to a retire queue that the root view frees at the start of each render; keep new code on that path.
+
+Fonts are resolved per platform (fontconfig on Linux), since gpui needs concrete family names.
 
 ## Known gaps / next steps
 
