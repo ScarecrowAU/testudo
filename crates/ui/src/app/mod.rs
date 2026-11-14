@@ -837,7 +837,7 @@ fn speed_menu(
     let set = Rc::new(set);
     // An outlined chip with a caret, like the speed pickers in session-replay
     // and video players, so it reads as a control rather than a label.
-    Button::new(id)
+    button(id)
         .label(speed_label(current))
         .small()
         .outline()
@@ -874,6 +874,12 @@ fn app_icon() -> Arc<Image> {
         ))
     });
     ICON.clone()
+}
+
+/// A button with the pointer cursor (gpui-kit's buttons keep the arrow, the
+/// desktop default); disabled buttons put the arrow back.
+fn button(id: impl Into<ElementId>) -> Button {
+    Button::new(id).cursor_pointer()
 }
 
 /// Height of a page tile's title/URL bar; the frame fits above it.
@@ -981,7 +987,7 @@ impl TestudoApp {
                     .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Testudo")),
             )
             .child(
-                Button::new("mode-live")
+                button("mode-live")
                     .label("● Live")
                     .small()
                     .ghost()
@@ -993,7 +999,7 @@ impl TestudoApp {
                     })),
             )
             .child(
-                Button::new("mode-history")
+                button("mode-history")
                     .label("History")
                     .small()
                     .ghost()
@@ -1007,16 +1013,16 @@ impl TestudoApp {
             )
             .child(div().w(px(1.)).h(px(18.)).bg(cx.theme().border))
             .child(
-                Button::new("pick-folder")
+                button("pick-folder")
                     .label(if self.picking { "…" } else { "📂" })
                     .small()
-                    .disabled(self.picking)
+                    .disabled(self.picking).when(self.picking, |b| b.cursor_default())
                     .tooltip("Choose a project directory")
                     .on_click(cx.listener(|this, _, window, cx| this.pick_folder(window, cx))),
             )
             .child(div().w(px(380.)).child(Input::new(&self.project_input).small()))
             .child(
-                Button::new("scan")
+                button("scan")
                     .label("⟳ Scan")
                     .small()
                     .tooltip("Find test suites in this directory")
@@ -1029,6 +1035,7 @@ impl TestudoApp {
             .when(mode == Mode::Live, |row| {
                 row.child(
                     Checkbox::new("keep-closed")
+                        .cursor_pointer()
                         .label("Keep closed pages")
                         .checked(self.live.keep_closed_pages)
                         .on_click(cx.listener(|this, checked: &bool, _, cx| {
@@ -1043,7 +1050,7 @@ impl TestudoApp {
 
     /// Gear button opening the settings dialog.
     fn settings_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        Button::new("settings")
+        button("settings")
             .icon(media_icon("settings"))
             .small()
             .ghost()
@@ -1134,10 +1141,10 @@ impl TestudoApp {
                     .id(("suite", i))
                     .gap_2()
                     .child(
-                        Button::new(("run-suite", i))
+                        button(("run-suite", i))
                             .label("▶")
                             .xsmall()
-                            .disabled(!s.runnable())
+                            .disabled(!s.runnable()).when(!s.runnable(), |b| b.cursor_default())
                             .on_click(cx.listener(move |this, _, _, cx| this.start_suite(&suite, cx))),
                     )
                     .child(
@@ -1156,7 +1163,7 @@ impl TestudoApp {
         }
         if runnable > 1 {
             col = col.child(
-                Button::new("run-all")
+                button("run-all")
                     .label(format!("▶ Run all {runnable}"))
                     .small()
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1240,7 +1247,7 @@ impl TestudoApp {
                             .items_center()
                             .child(div().flex_1().min_w_0().truncate().text_sm().font_weight(FontWeight::SEMIBOLD).child(title))
                             .child(
-                                Button::new(("close-error", i))
+                                button(("close-error", i))
                                     .label("✕")
                                     .xsmall()
                                     .ghost()
@@ -1352,7 +1359,7 @@ impl TestudoApp {
                 if w == Which::Live {
                     if run.is_running() && self.handles.contains_key(&run.id) {
                         let id = run.id.clone();
-                        header = header.child(Button::new(("stop", ri)).label("Stop").xsmall().ghost().on_click(
+                        header = header.child(button(("stop", ri)).label("Stop").xsmall().ghost().on_click(
                             cx.listener(move |this, _, _, cx| {
                                 if let Some(h) = this.handles.get(&id) {
                                     h.cancel();
@@ -1362,7 +1369,7 @@ impl TestudoApp {
                         ));
                     } else if !run.is_running() && self.store.is_some() {
                         let id = run.id.clone();
-                        header = header.child(Button::new(("replay", ri)).label("Replay").xsmall().ghost().on_click(
+                        header = header.child(button(("replay", ri)).label("Replay").xsmall().ghost().on_click(
                             cx.listener(move |this, _, _, cx| {
                                 this.open_replay(&id);
                                 cx.notify();
@@ -1633,7 +1640,7 @@ impl TestudoApp {
             (InspectorTab::Output, "Output"),
         ] {
             tabs = tabs.child(
-                Button::new(SharedString::from(format!("tab-{name}")))
+                button(SharedString::from(format!("tab-{name}")))
                     .label(name)
                     .xsmall()
                     .ghost()
@@ -1659,7 +1666,7 @@ impl TestudoApp {
                     div().text_xs().text_color(muted).child("exporting…").into_any_element()
                 } else {
                     let st = store.clone();
-                    Button::new("export")
+                    button("export")
                         .label("⬇ Export MP4")
                         .xsmall()
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -1673,7 +1680,7 @@ impl TestudoApp {
             }
             let dir = store.exports_dir();
             tabs = tabs.child(
-                Button::new("exports-dir")
+                button("exports-dir")
                     .label("📂")
                     .xsmall()
                     .tooltip("Open exports folder")
@@ -1754,7 +1761,7 @@ impl TestudoApp {
         let mut chips = h_flex().gap_1();
         for (f, name) in [(StreamFilter::All, "All"), (StreamFilter::Stdout, "stdout"), (StreamFilter::Stderr, "stderr")] {
             chips = chips.child(
-                Button::new(SharedString::from(format!("os-{name}-{}", w as usize)))
+                button(SharedString::from(format!("os-{name}-{}", w as usize)))
                     .label(name)
                     .xsmall()
                     .ghost()
@@ -1775,6 +1782,7 @@ impl TestudoApp {
             .child(chips)
             .child(
                 Checkbox::new(("hide-repeats", w as usize))
+                    .cursor_pointer()
                     .label("Hide repeated stderr")
                     .checked(hide)
                     .on_click(cx.listener(move |this, checked: &bool, _, cx| {
@@ -1796,7 +1804,7 @@ impl TestudoApp {
             })
             .child(div().flex_1())
             .child(
-                Button::new(("follow", w as usize))
+                button(("follow", w as usize))
                     .label("● Live")
                     .xsmall()
                     .when(follow, |b| b.primary())
@@ -2002,7 +2010,7 @@ impl TestudoApp {
                 h_flex()
                     .gap_2()
                     .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child("History"))
-                    .child(Button::new("hist-refresh").label("⟳").xsmall().tooltip("Refresh").on_click(cx.listener(
+                    .child(button("hist-refresh").label("⟳").xsmall().tooltip("Refresh").on_click(cx.listener(
                         |this, _, _, cx| {
                             this.refresh_history();
                             cx.notify();
@@ -2217,7 +2225,7 @@ impl TestudoApp {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(Button::new("tl-start").icon(media_icon("skip-back")).small().ghost().tooltip("Start").on_click(cx.listener(
+                    .child(button("tl-start").icon(media_icon("skip-back")).small().ghost().tooltip("Start").on_click(cx.listener(
                         |this, _, _, cx| {
                             if let (Some(r), Some(store)) = (this.replay.as_mut(), this.store.clone()) {
                                 let s = r.start;
@@ -2226,7 +2234,7 @@ impl TestudoApp {
                             cx.notify();
                         },
                     )))
-                    .child(Button::new("tl-play")
+                    .child(button("tl-play")
                         .icon(media_icon(if playing { "pause" } else { "play" }))
                         .small()
                         .primary()
@@ -2252,6 +2260,7 @@ impl TestudoApp {
                     .child(div().font_family(crate::fonts::mono()).text_sm().child(time))
                     .child(
                         Checkbox::new("tl-keep")
+                                .cursor_pointer()
                             .label("Keep closed pages")
                             .checked(keep)
                             .on_click(cx.listener(|this, checked: &bool, _, cx| {
@@ -2265,6 +2274,7 @@ impl TestudoApp {
             .child(
                 div()
                     .id("timeline")
+                    .cursor_pointer()
                     .w_full()
                     .h(px(height))
                     .rounded_sm()

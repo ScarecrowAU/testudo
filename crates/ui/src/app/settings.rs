@@ -235,11 +235,11 @@ impl Render for SettingsPanel {
                                     .child(shown_dir.display().to_string())
                                     .tooltip(tooltip_text(shown_dir.display().to_string())),
                             )
-                            .child(Button::new("rec-dir-change").label("Change…").small().outline().on_click(
+                            .child(button("rec-dir-change").label("Change…").small().outline().on_click(
                                 cx.listener(|p, _, _, cx| p.pick_location(cx)),
                             ))
                             .when(settings.recordings_dir.is_some(), |r| {
-                                r.child(Button::new("rec-dir-default").label("Default").small().ghost().on_click(
+                                r.child(button("rec-dir-default").label("Default").small().ghost().on_click(
                                     cx.listener(|p, _, _, cx| p.update_settings(cx, |s| s.recordings_dir = None)),
                                 ))
                             }),
@@ -263,7 +263,7 @@ impl Render for SettingsPanel {
                 h_flex()
                     .gap_2()
                     .child(age)
-                    .child(Button::new("delete-older").label("Delete").small().outline().on_click(cx.listener(
+                    .child(button("delete-older").label("Delete").small().outline().on_click(cx.listener(
                         move |p, _, window, cx| {
                             p.confirm_delete(Some(now_ms() - days as f64 * DAY_MS), window, cx)
                         },
@@ -273,7 +273,7 @@ impl Render for SettingsPanel {
             .child(row(
                 "Delete all recordings",
                 Some("Runs in progress are kept."),
-                Button::new("delete-all")
+                button("delete-all")
                     .label("Delete all")
                     .small()
                     .danger()
@@ -293,7 +293,7 @@ fn choice_menu<T: Copy + 'static>(
 ) -> impl IntoElement {
     let options: Rc<Vec<(String, bool, T)>> = Rc::new(options.collect());
     let on_pick = Rc::new(on_pick);
-    Button::new(id)
+    button(id)
         .label(current)
         .small()
         .outline()

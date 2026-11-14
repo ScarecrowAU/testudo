@@ -243,7 +243,7 @@ impl TestudoApp {
                     .gap_2()
                     .items_center()
                     .child(
-                        Button::new("focus-back")
+                        button("focus-back")
                             .label("← All pages")
                             .small()
                             .ghost()
@@ -283,19 +283,18 @@ impl TestudoApp {
                     }))
                     .child(div().flex_1())
                     .child(
-                        Button::new("f-rerun")
+                        button("f-rerun")
                             .icon(media_icon("rotate-ccw"))
-                            .label("Re-run test")
-                            .xsmall()
-                            .outline()
-                            .disabled(rerun_blocker.is_some())
-                            .tooltip(rerun_blocker.unwrap_or("Run just this test again and watch it live"))
+                            .small()
+                            .ghost()
+                            .disabled(rerun_blocker.is_some()).when(rerun_blocker.is_some(), |b| b.cursor_default())
+                            .tooltip(rerun_blocker.unwrap_or("Re-run this test and watch it live"))
                             .on_click(cx.listener(move |this, _, _, cx| this.rerun_test(w, cx))),
                     )
                     .when(self.store.is_some() && compare_target.is_some(), |row| {
                         let comparing = compared.is_some();
                         let align = |id: &'static str, label: &'static str, step: bool, tip: &'static str| {
-                            Button::new(id)
+                            button(id)
                                 .label(label)
                                 .xsmall()
                                 .when(by_step == step, |b| b.primary())
@@ -324,12 +323,16 @@ impl TestudoApp {
                                 ))
                         })
                         .child(
-                            Button::new("f-compare")
-                                .label(if comparing { "Hide comparison" } else { "Compare with previous runs" })
-                                .xsmall()
+                            button("f-compare")
+                                .icon(media_icon("columns-2"))
+                                .small()
                                 .when(comparing, |b| b.primary())
                                 .when(!comparing, |b| b.ghost())
-                                .tooltip("Play this test's recordings from earlier runs alongside, in step")
+                                .tooltip(if comparing {
+                                    "Hide comparison"
+                                } else {
+                                    "Compare with previous runs: play this test's earlier recordings alongside, in step"
+                                })
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     let store = this.store.clone();
                                     let target = compare_target.clone();
@@ -361,7 +364,7 @@ impl TestudoApp {
             .child(div().flex_none().text_xs().text_color(muted).child(if url.starts_with("https") { "🔒" } else { "🌐" }))
             .child(div().flex_1().min_w_0().truncate().text_sm().child(url.clone()))
             .child(
-                Button::new("copy-url")
+                button("copy-url")
                     .label("Copy")
                     .xsmall()
                     .ghost()
@@ -487,7 +490,7 @@ impl TestudoApp {
         let controls = h_flex()
             .gap_1()
             .items_center()
-            .child(Button::new("f-start").icon(media_icon("skip-back")).small().ghost().tooltip("Start").on_click(cx.listener(
+            .child(button("f-start").icon(media_icon("skip-back")).small().ghost().tooltip("Start").on_click(cx.listener(
                 move |this, _, _, cx| {
                     this.with_focus(w, |f, page, _, _| {
                         let (s, _) = f.bounds(page);
@@ -497,7 +500,7 @@ impl TestudoApp {
                 },
             )))
             .child(
-                Button::new("f-prev")
+                button("f-prev")
                     .icon(media_icon("step-back"))
                     .small()
                     .ghost()
@@ -508,7 +511,7 @@ impl TestudoApp {
                     })),
             )
             .child(
-                Button::new("f-play")
+                button("f-play")
                     .icon(media_icon(if playing { "pause" } else { "play" }))
                     .small()
                     .primary()
@@ -517,7 +520,7 @@ impl TestudoApp {
                     .on_click(cx.listener(|this, _, window, cx| this.on_toggle_play(&TogglePlay, window, cx))),
             )
             .child(
-                Button::new("f-next")
+                button("f-next")
                     .icon(media_icon("step-forward"))
                     .small()
                     .ghost()
@@ -543,7 +546,7 @@ impl TestudoApp {
             .child(div().flex_1().min_w_0().truncate().text_xs().text_color(muted).child(hover_label))
             .when(running, |row| {
                 row.child(
-                    Button::new("f-live")
+                    button("f-live")
                         .label("● LIVE")
                         .xsmall()
                         .when(follow, |b| b.danger())
@@ -643,7 +646,7 @@ impl TestudoApp {
                 None => name.to_owned(),
             };
             tabs = tabs.child(
-                Button::new(SharedString::from(format!("ftab-{name}")))
+                button(SharedString::from(format!("ftab-{name}")))
                     .label(label)
                     .xsmall()
                     .ghost()
@@ -779,7 +782,7 @@ impl TestudoApp {
                 continue;
             }
             chips = chips.child(
-                Button::new(SharedString::from(format!("nf-{}", f.label())))
+                button(SharedString::from(format!("nf-{}", f.label())))
                     .label(format!("{} {}", f.label(), counts[i]))
                     .xsmall()
                     .ghost()
@@ -903,7 +906,7 @@ impl TestudoApp {
             (ConsoleFilter::Warnings, "Warnings"),
         ] {
             chips = chips.child(
-                Button::new(SharedString::from(format!("cf-{name}")))
+                button(SharedString::from(format!("cf-{name}")))
                     .label(name)
                     .xsmall()
                     .ghost()
