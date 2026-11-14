@@ -3,6 +3,7 @@
 //! (Steps / Network / Console / Output) synced to the scrub time.
 
 use super::*;
+use crate::logic::{status_label, url_path};
 use crate::state::{ConsoleFilter, FocusTab, NetFilter};
 
 /// A step as shown in the focus view.
@@ -45,25 +46,6 @@ fn step_kind(category: Option<&str>) -> &'static str {
         Some("test.step") => "step",
         _ => "other",
     }
-}
-
-fn status_label(status: Option<testudo_protocol::TestStatus>) -> &'static str {
-    use testudo_protocol::TestStatus::*;
-    match status {
-        None => "Running",
-        Some(Passed) => "Passed",
-        Some(Failed) => "Failed",
-        Some(TimedOut) => "Timed out",
-        Some(Skipped) => "Skipped",
-        Some(Interrupted) => "Interrupted",
-        Some(Unknown) => "Unknown",
-    }
-}
-
-fn url_path(url: &str) -> &str {
-    url.split_once("://")
-        .and_then(|(_, rest)| rest.find('/').map(|i| &rest[i..]))
-        .unwrap_or(url)
 }
 
 impl TestudoApp {

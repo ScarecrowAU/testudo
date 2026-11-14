@@ -104,6 +104,25 @@ pub fn status_icon(status: Option<TestStatus>) -> (&'static str, Tone) {
     }
 }
 
+pub fn status_label(status: Option<TestStatus>) -> &'static str {
+    match status {
+        None => "Running",
+        Some(TestStatus::Passed) => "Passed",
+        Some(TestStatus::Failed) => "Failed",
+        Some(TestStatus::TimedOut) => "Timed out",
+        Some(TestStatus::Skipped) => "Skipped",
+        Some(TestStatus::Interrupted) => "Interrupted",
+        Some(TestStatus::Unknown) => "Unknown",
+    }
+}
+
+/// The path (and query) of a URL, or the whole string if it has none.
+pub fn url_path(url: &str) -> &str {
+    url.split_once("://")
+        .and_then(|(_, rest)| rest.find('/').map(|i| &rest[i..]))
+        .unwrap_or(url)
+}
+
 pub fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_owned()
@@ -194,6 +213,13 @@ mod tests {
         assert!(looks_like_failure("Error: page.waitForURL: Test timeout of 30000ms exceeded."));
         assert!(looks_like_failure(" × fails on purpose 117ms"));
         assert!(looks_like_failure("AssertionError: expected 2 to be 3"));
+    }
+
+    #[test]
+    fn url_paths() {
+        assert_eq!(url_path("http://localhost:3000/feeds?view=all"), "/feeds?view=all");
+        assert_eq!(url_path("https://example.com"), "https://example.com");
+        assert_eq!(url_path("about:blank"), "about:blank");
     }
 
     #[test]

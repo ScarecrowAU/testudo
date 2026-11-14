@@ -22,7 +22,7 @@ use testudo_store::{RunRow, Store};
 
 use crate::bridge::UiMsg;
 use crate::logic::{
-    REPEAT_THRESHOLD, RowState, Tone, expand_tilde, fmt_ago, fmt_dur, fmt_secs, fmt_time, looks_like_failure, ordered_pages, pane_name,
+    REPEAT_THRESHOLD, RowState, Tone, expand_tilde, fmt_ago, fmt_dur, fmt_secs, fmt_time, status_label, url_path, looks_like_failure, ordered_pages, pane_name,
     row_state, status_icon, truncate,
 };
 use crate::model::{Model, Page, PageKey};
@@ -994,49 +994,74 @@ impl TestudoApp {
         let cols = (pages.len() as f32).sqrt().ceil().max(1.0) as u16;
         let rows = (pages.len() as u16).div_ceil(cols).max(1);
         let selected = view.selected_page.clone();
-        let mut grid = div().size_full().p_1().gap_1().grid().grid_cols(cols).grid_rows(rows);
+        let mut grid = div().size_full().p_2().gap_2().grid().grid_cols(cols).grid_rows(rows);
+        let theme = cx.theme().clone();
         for (i, page) in pages.into_iter().enumerate() {
             let test = view.model.test_for_page(page);
-            let (_, tn) = status_icon(test.and_then(|t| t.status));
-            let color = tone(tn, cx);
+            let status = test.and_then(|t| t.status);
+            let (_, tn) = status_icon(status);
             let is_selected = selected.as_ref() == Some(&page.key);
             let key = page.key.clone();
             let title = pane_name(&view.model, page).to_owned();
             let closed = page.closed_at.is_some();
+            let live = w == Which::Live && !closed;
             let frame = page.frame.clone();
+            // The status a pane shows: its test's, or "Closed" for a finished page
+            // outside a test.
+            let (label, color) = match (status, closed) {
+                (None, true) => ("Closed", muted),
+                _ => (status_label(status), tone(tn, cx)),
+            };
             grid = grid.child(
-                v_flex()
+                div()
                     .id(("pane", i))
+                    .relative()
                     .min_h_0()
                     .min_w_0()
                     .overflow_hidden()
-                    .p_1()
+                    .rounded_md()
                     .border_1()
-                    .when(is_selected, |d| d.border_2())
-                    .border_color(color)
-                    .rounded_sm()
+                    .border_color(if is_selected { theme.blue } else { theme.border })
+                    .bg(theme.secondary.opacity(0.5))
                     .cursor_pointer()
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(color).truncate().child(title.clone()))
-                    .child(div().text_xs().text_color(muted).truncate().child(page.url.clone()))
+                    .hover(|d| d.border_color(theme.muted_foreground))
+                    // The frame fills the tile; labels sit on top of it.
                     .child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_hidden()
-                            .when(closed, |d| d.opacity(0.55))
-                            .child(match frame {
-                                Some(f) => img(f).object_fit(ObjectFit::Contain).size_full().into_any_element(),
-                                None => div()
-                                    .size_full()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_color(muted)
-                                    .child("waiting for frames…")
-                                    .into_any_element(),
-                            }),
+                        div().size_full().when(closed, |d| d.opacity(0.7)).child(match frame {
+                            Some(f) => img(f).object_fit(ObjectFit::Contain).size_full().into_any_element(),
+                            None => div()
+                                .size_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_sm()
+                                .text_color(muted)
+                                .child("waiting for frames…")
+                                .into_any_element(),
+                        }),
                     )
-                    .tooltip(tooltip_text(format!("{title}\nclick to open: watch live, or scrub the recording")))
+                    .child(
+                        h_flex()
+                            .absolute()
+                            .top_2()
+                            .left_2()
+                            .gap_1()
+                            .child(pill(label, color).bg(theme.background.opacity(0.85)))
+                            .when(live, |d| d.child(pill("● LIVE", theme.red).bg(theme.background.opacity(0.85)))),
+                    )
+                    .child(
+                        v_flex()
+                            .absolute()
+                            .bottom_0()
+                            .left_0()
+                            .right_0()
+                            .px_2()
+                            .py_1()
+                            .bg(theme.background.opacity(0.82))
+                            .child(div().truncate().text_sm().font_weight(FontWeight::SEMIBOLD).child(title.clone()))
+                            .child(div().truncate().text_xs().text_color(muted).child(url_path(&page.url).to_owned())),
+                    )
+                    .tooltip(tooltip_text(format!("{title}\n{}\nclick to open: watch live, or scrub the recording", page.url)))
                     .on_click(cx.listener(move |this, _, window, cx| this.open_focus(w, key.clone(), window, cx))),
             );
         }
