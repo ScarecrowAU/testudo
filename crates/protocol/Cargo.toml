@@ -1,0 +1,12 @@
+[package]
+name = "testudo-protocol"
+description = "Wire protocol between Testudo adapters and the core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
