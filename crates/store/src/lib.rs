@@ -184,6 +184,14 @@ pub struct PageRow {
 }
 
 #[derive(Debug, Clone)]
+pub struct FlakyTest {
+    pub title: String,
+    pub file: Option<String>,
+    pub passes: i64,
+    pub fails: i64,
+}
+
+#[derive(Debug, Clone)]
 pub struct TestResultRow {
     pub run_id: String,
     pub status: Option<String>,
@@ -267,6 +275,30 @@ impl Store {
                 opened_at: r.get(3)?,
                 closed_at: r.get(4)?,
                 frames: r.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Tests that both passed and failed within the newest `runs` runs,
+    /// matched across runs by file + title path; most failures first.
+    pub fn flaky_tests(&self, runs: usize) -> Result<Vec<FlakyTest>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT t.title, t.file,
+                    SUM(t.status = 'passed') AS passes,
+                    SUM(t.status IN ('failed', 'timedOut')) AS fails
+             FROM tests t
+             JOIN (SELECT id FROM runs ORDER BY started_at DESC LIMIT ?1) r ON r.id = t.run_id
+             GROUP BY t.file, t.title_path
+             HAVING passes > 0 AND fails > 0
+             ORDER BY fails DESC, t.title",
+        )?;
+        let rows = stmt.query_map([runs as i64], |r| {
+            Ok(FlakyTest {
+                title: r.get(0)?,
+                file: r.get(1)?,
+                passes: r.get(2)?,
+                fails: r.get(3)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)

@@ -31,6 +31,10 @@ use crate::state::{InspectorTab, PageFocus, PagesView, Replay, Retired, StreamFi
 mod focus;
 
 const HISTORY_LIMIT: usize = 200;
+/// How many recent runs the History summary covers.
+const SUMMARY_RUNS: usize = 50;
+/// Runs shown in the History sparkline.
+const SPARK_RUNS: usize = 24;
 /// One wheel notch (~50px) moves this fraction of the page's duration.
 const WHEEL_FRACTION_PER_NOTCH: f64 = 0.02;
 /// Shift+wheel: pixels of scroll per frame step.
@@ -83,6 +87,8 @@ pub struct TestudoApp {
     live: PagesView,
     handles: HashMap<RunId, RunHandle>,
     history: Vec<RunRow>,
+    /// Tests that both passed and failed in recent runs.
+    flaky: Vec<testudo_store::FlakyTest>,
     replay: Option<Replay>,
     error: Option<String>,
 
@@ -175,6 +181,7 @@ impl TestudoApp {
             live: PagesView::new(),
             handles: HashMap::new(),
             history: Vec::new(),
+            flaky: Vec::new(),
             replay: None,
             error: None,
             project_input,
@@ -279,6 +286,7 @@ impl TestudoApp {
                 Ok(rows) => self.history = rows,
                 Err(e) => self.error = Some(format!("reading history: {e:#}")),
             }
+            self.flaky = store.flaky_tests(SUMMARY_RUNS).unwrap_or_default();
         }
     }
 
@@ -1478,6 +1486,7 @@ impl TestudoApp {
                     ))),
             )
             .children(self.store.as_ref().map(|s| div().text_xs().text_color(muted).truncate().child(s.dir().display().to_string())))
+            .child(self.render_history_summary(cx))
             .child(div().id("hist-list").flex_1().min_h_0().overflow_y_scroll().child(list))
             .when(self.replay.is_some(), |d| {
                 d.child(div().h(px(1.)).bg(cx.theme().border))
@@ -1522,6 +1531,110 @@ impl TestudoApp {
                 }),
             )
             .into_any_element()
+    }
+
+    /// Pass rate, flaky tests and a recent-runs sparkline above the History list.
+    fn render_history_summary(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let muted = theme.muted_foreground;
+        let recent: Vec<&RunRow> =
+            self.history.iter().filter(|r| r.status != "running").take(SUMMARY_RUNS).collect();
+        let passed = recent.iter().filter(|r| r.status == "passed").count();
+        let rate = (!recent.is_empty()).then(|| passed as f64 / recent.len() as f64 * 100.0);
+        let rate_color = match rate {
+            Some(r) if r >= 90.0 => theme.green,
+            Some(r) if r >= 70.0 => theme.yellow,
+            Some(_) => theme.red,
+            None => muted,
+        };
+        let card = |id: &'static str| {
+            v_flex()
+                .id(id)
+                .flex_1()
+                .min_w_0()
+                .h(px(76.))
+                .p_2()
+                .gap_px()
+                .rounded_md()
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.secondary.opacity(0.35))
+        };
+        let caption = |t: &str| div().text_xs().text_color(muted).truncate().child(t.to_owned());
+        let big = |t: String, c: Hsla| div().text_lg().font_weight(FontWeight::SEMIBOLD).text_color(c).child(t);
+
+        let flaky_detail = if self.flaky.is_empty() {
+            "No test both passed and failed in the recent runs.".to_owned()
+        } else {
+            self.flaky
+                .iter()
+                .take(20)
+                .map(|f| format!("✔{} ✘{}  {}", f.passes, f.fails, f.title))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // Sparkline: oldest → newest, bar height by duration, colour by result.
+        let spark: Vec<(f32, Hsla)> = {
+            let runs: Vec<&&RunRow> = recent.iter().take(SPARK_RUNS).collect();
+            let max = runs
+                .iter()
+                .filter_map(|r| r.ended_at.map(|e| e - r.started_at))
+                .fold(1.0_f64, f64::max);
+            runs.iter()
+                .rev()
+                .map(|r| {
+                    let d = r.ended_at.map_or(0.0, |e| e - r.started_at);
+                    let c = match r.status.as_str() {
+                        "passed" => theme.green,
+                        "interrupted" => theme.yellow,
+                        _ => theme.red,
+                    };
+                    (((d / max) as f32).clamp(0.08, 1.0), c)
+                })
+                .collect()
+        };
+        let spark_n = spark.len();
+
+        h_flex()
+            .gap_2()
+            .child(
+                card("sum-rate")
+                    .child(caption("Pass rate"))
+                    .child(big(rate.map_or("—".to_owned(), |r| format!("{r:.0}%")), rate_color))
+                    .child(caption(&format!("{passed} of {} runs", recent.len()))),
+            )
+            .child(
+                card("sum-flaky")
+                    .child(caption("Flaky tests"))
+                    .child(big(self.flaky.len().to_string(), if self.flaky.is_empty() { theme.foreground } else { theme.yellow }))
+                    .child(caption(&format!("last {SUMMARY_RUNS} runs")))
+                    .tooltip(tooltip_text(flaky_detail)),
+            )
+            .child(
+                card("sum-spark")
+                    .child(caption("Recent runs"))
+                    .child(
+                        canvas(
+                            |_, _, _| {},
+                            move |bounds, _, window, _| {
+                                if spark.is_empty() {
+                                    return;
+                                }
+                                let slot = bounds.size.width / spark.len() as f32;
+                                let bar = (slot - px(2.)).max(px(1.));
+                                for (i, (h, c)) in spark.iter().enumerate() {
+                                    let height = bounds.size.height * *h;
+                                    let origin = point(bounds.left() + slot * i as f32, bounds.bottom() - height);
+                                    window.paint_quad(fill(Bounds::new(origin, size(bar, height)), *c));
+                                }
+                            },
+                        )
+                        .w_full()
+                        .h(px(26.)),
+                    )
+                    .tooltip(tooltip_text(format!("duration of the last {spark_n} runs, oldest → newest; colour = result"))),
+            )
     }
 
     fn render_timeline(&mut self, cx: &mut Context<Self>) -> impl IntoElement {

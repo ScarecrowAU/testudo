@@ -198,3 +198,40 @@ fn late_test_result_after_exit_still_counts() {
     assert_eq!(Store::open(&dir).unwrap().run("r1").unwrap().unwrap().passed, 2);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn flaky_tests_pass_and_fail_across_recent_runs() {
+    let (dir, store) = temp_store("flaky");
+    let add = |run: &str, started: f64, test: &str, status: &str| {
+        store
+            .conn
+            .execute(
+                "INSERT OR IGNORE INTO runs (id, started_at, status) VALUES (?1, ?2, 'failed')",
+                params![run, started],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO tests (run_id, test_id, title, title_path, file, status) VALUES (?1, ?2, ?2, ?3, 'a.spec.ts', ?4)",
+                params![run, test, format!("[\"{test}\"]"), status],
+            )
+            .unwrap();
+    };
+    // "wobbly" passes and fails; "solid" always passes; "broken" always fails.
+    for (i, (wobbly, solid, broken)) in [("passed", "passed", "failed"), ("failed", "passed", "failed"), ("timedOut", "passed", "failed")]
+        .into_iter()
+        .enumerate()
+    {
+        let run = format!("r{i}");
+        add(&run, i as f64, "wobbly", wobbly);
+        add(&run, i as f64, "solid", solid);
+        add(&run, i as f64, "broken", broken);
+    }
+    let flaky = store.flaky_tests(10).unwrap();
+    assert_eq!(flaky.len(), 1);
+    assert_eq!((flaky[0].title.as_str(), flaky[0].passes, flaky[0].fails), ("wobbly", 1, 2));
+    // Only the newest two runs: wobbly failed in both, so it is not flaky there.
+    assert!(store.flaky_tests(2).unwrap().is_empty());
+    std::fs::remove_dir_all(dir).unwrap();
+}
