@@ -232,6 +232,17 @@ impl TestudoApp {
                         _ => FocusTab::Steps,
                     };
                 }
+                // Test hook (debug builds only): open the comparison.
+                #[cfg(debug_assertions)]
+                if std::env::var_os("TESTUDO_DEBUG_COMPARE").is_some()
+                    && let (Some(store), Some(f)) = (app.store.clone(), replay.view.focus.as_mut())
+                    && let Some(test) = f.recorded.as_ref().and_then(|m| {
+                        let page = m.pages.get(&f.key)?;
+                        m.test_for_page(page).and_then(|t| Some((t.file.clone()?, t.title_path.clone())))
+                    })
+                {
+                    f.open_compare(&test.0, &test.1, &store);
+                }
                 window.focus(&app.focus_handle, cx);
             }
         }
@@ -264,6 +275,9 @@ impl TestudoApp {
                     Event::PageOpened { page_id, .. } => Some(page_id.clone()),
                     _ => None,
                 };
+                if matches!(event, Event::RunStarted { .. }) {
+                    self.live.drop_finished_run_pages(&mut self.retired);
+                }
                 self.live.apply(&run_id, at, event);
                 // Test hook (debug builds only): focus the first page that opens.
                 #[cfg(debug_assertions)]
@@ -480,6 +494,7 @@ impl TestudoApp {
                 let running = running_live && page.closed_at.is_none() && f.recorded.is_none();
                 let a = f.tick(page, running, dt_ms);
                 f.update_image(page, store, retired);
+                f.update_compare(page, retired);
                 a
             });
             animate |= r.unwrap_or(false);

@@ -15,7 +15,7 @@ use gpui_kit::RenderImage;
 use testudo_protocol::{Event, TestStatus};
 use testudo_store::export::{ExportOptions, export_mp4};
 use testudo_store::frames::FrameIndex;
-use testudo_store::{RunRow, Store};
+use testudo_store::{PriorPage, RunRow, Store};
 
 use crate::bridge::decode_jpeg;
 use crate::model::{Effect, Model, Page, PageKey};
@@ -104,6 +104,30 @@ impl PagesView {
             }
         }
         self.model.pages.values().any(|p| p.closed_at.is_some())
+    }
+
+    /// A new run is starting: pages of runs that already finished leave the
+    /// grid (they stay in history and in the focus view's comparison). The
+    /// focused page stays so an open focus view isn't pulled away.
+    pub fn drop_finished_run_pages(&mut self, retired: &mut Retired) {
+        let finished: std::collections::HashSet<&str> =
+            self.model.runs.iter().filter(|r| !r.is_running()).map(|r| r.id.as_str()).collect();
+        let focused = self.focus.as_ref().filter(|f| f.recorded.is_none()).map(|f| &f.key);
+        let gone: Vec<PageKey> = self
+            .model
+            .pages
+            .keys()
+            .filter(|k| finished.contains(k.run_id.as_str()) && Some(*k) != focused)
+            .cloned()
+            .collect();
+        for key in gone {
+            if let Some(mut page) = self.model.pages.remove(&key) {
+                retired.extend(page.frame.take());
+            }
+            if self.selected_page.as_ref() == Some(&key) {
+                self.selected_page = None;
+            }
+        }
     }
 
     pub fn open_focus(&mut self, focus: PageFocus) {
@@ -223,6 +247,32 @@ pub struct PageFocus {
     pub console_filter: ConsoleFilter,
     /// What the mouse is over on the timeline (step / request / navigation).
     pub hover_label: Option<String>,
+    /// Side-by-side recordings of the same test from earlier runs, played in
+    /// step with this page (same time since page open).
+    pub compare: Option<Vec<CompareLane>>,
+}
+
+/// Earlier runs shown next to the focused page.
+pub const COMPARE_RUNS: usize = 3;
+
+pub struct CompareLane {
+    pub prior: PriorPage,
+    frames: Option<FrameIndex>,
+    shown: Option<usize>,
+    pub image: Option<Arc<RenderImage>>,
+}
+
+impl CompareLane {
+    fn new(prior: PriorPage, store: &Store) -> Self {
+        let frames = FrameIndex::open(&store.frame_path(&prior.run_id, &prior.page_id)).ok();
+        Self { prior, frames, shown: None, image: None }
+    }
+
+    /// Length of this recording: page lifetime, or its last frame if later.
+    pub fn length(&self) -> f64 {
+        let last = self.frames.as_ref().and_then(|f| f.entries.last()).map_or(0.0, |e| e.at - self.prior.opened_at);
+        self.prior.closed_at.map_or(0.0, |c| c - self.prior.opened_at).max(last)
+    }
 }
 
 impl PageFocus {
@@ -253,6 +303,7 @@ impl PageFocus {
             net_filter: NetFilter::All,
             console_filter: ConsoleFilter::All,
             hover_label: None,
+            compare: None,
         }
     }
 
@@ -261,7 +312,43 @@ impl PageFocus {
         if let Some(m) = &mut self.recorded {
             out.extend(m.take_frames());
         }
+        out.extend(self.close_compare());
         out
+    }
+
+    /// Show earlier recordings of `test` (file + title path) beside this page.
+    pub fn open_compare(&mut self, file: &str, title_path: &[String], store: &Store) {
+        let prior = store
+            .prior_pages(file, title_path, &self.key.run_id, COMPARE_RUNS)
+            .inspect_err(|e| tracing::warn!("comparison query failed: {e:#}"))
+            .unwrap_or_default();
+        self.compare = Some(prior.into_iter().map(|p| CompareLane::new(p, store)).collect());
+    }
+
+    pub fn close_compare(&mut self) -> Retired {
+        self.compare
+            .take()
+            .into_iter()
+            .flatten()
+            .filter_map(|mut l| l.image.take())
+            .collect()
+    }
+
+    /// Show each compared recording at the same time since page open as the
+    /// scrub position (before its first frame: its first frame).
+    pub fn update_compare(&mut self, page: &Page, retired: &mut Retired) {
+        let rel = self.t.min(self.bounds(page).1) - page.opened_at;
+        for lane in self.compare.iter_mut().flatten() {
+            let Some(f) = lane.frames.as_mut().filter(|f| !f.entries.is_empty()) else { continue };
+            let i = f.index_at(lane.prior.opened_at + rel).unwrap_or(0);
+            if lane.shown == Some(i) {
+                continue;
+            }
+            if let Some(image) = f.read(i).ok().and_then(|j| decode_jpeg(&j)) {
+                retired.extend(lane.image.replace(image));
+                lane.shown = Some(i);
+            }
+        }
     }
 
     pub fn cycle_speed(&mut self) {
@@ -274,7 +361,12 @@ impl PageFocus {
         let start = page.opened_at;
         let end = page.closed_at.unwrap_or_else(testudo_core::now_ms);
         let last_frame = self.frames.as_ref().and_then(|f| f.entries.last()).map_or(start, |e| e.at);
-        (start, end.max(last_frame).max(start + 1.0))
+        // A finished page's timeline also covers longer compared recordings.
+        let compared = match (page.closed_at, &self.compare) {
+            (Some(_), Some(lanes)) => start + lanes.iter().map(CompareLane::length).fold(0.0, f64::max),
+            _ => start,
+        };
+        (start, end.max(last_frame).max(compared).max(start + 1.0))
     }
 
     pub fn seek(&mut self, t: f64, page: &Page) {
@@ -599,5 +691,42 @@ impl Exporter {
         });
         self.job = Some((page.page_id.clone(), rx));
         self.status = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn page_events(view: &mut PagesView, run: &str, at: f64) {
+        let started = Event::RunStarted {
+            label: run.into(),
+            runner: "playwright".into(),
+            cwd: "/x".into(),
+            args: vec![],
+        };
+        view.apply(run, at, started);
+        let opened = Event::PageOpened {
+            page_id: "p".into(),
+            test_id: None,
+            worker_index: None,
+            browser: None,
+            url: None,
+        };
+        view.apply(run, at, opened);
+        view.apply(run, at + 1.0, Event::PageClosed { page_id: "p".into() });
+    }
+
+    #[test]
+    fn new_run_drops_pages_of_finished_runs_only() {
+        let mut view = PagesView::new();
+        page_events(&mut view, "old", 0.0);
+        view.apply("old", 2.0, Event::ProcessExited { code: Some(0) });
+        page_events(&mut view, "busy", 3.0); // still running
+        let mut retired = Vec::new();
+        view.drop_finished_run_pages(&mut retired);
+        let runs: Vec<&str> = view.model.pages.keys().map(|k| k.run_id.as_str()).collect();
+        assert_eq!(runs, ["busy"]);
+        assert_eq!(view.model.runs.len(), 2, "runs stay in the run list");
     }
 }

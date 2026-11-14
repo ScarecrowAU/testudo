@@ -199,6 +199,19 @@ pub struct TestResultRow {
     pub started_at: Option<f64>,
 }
 
+/// A recorded page of the same test in an earlier run, for side-by-side
+/// comparison.
+#[derive(Debug, Clone)]
+pub struct PriorPage {
+    pub run_id: String,
+    pub page_id: String,
+    pub run_started_at: f64,
+    pub status: Option<String>,
+    pub duration_ms: Option<f64>,
+    pub opened_at: f64,
+    pub closed_at: Option<f64>,
+}
+
 /// Read access (and pruning) for the GUI and CLI. Writes go through `Recorder`.
 pub struct Store {
     dir: PathBuf,
@@ -320,6 +333,52 @@ impl Store {
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Recordings of "the same test" (file + title path) in runs other than
+    /// `exclude_run`, newest first. One page per run (the last attempt's), and
+    /// only pages whose frame file still exists.
+    pub fn prior_pages(
+        &self,
+        file: &str,
+        title_path: &[String],
+        exclude_run: &str,
+        limit: usize,
+    ) -> Result<Vec<PriorPage>> {
+        let title_path = serde_json::to_string(title_path)?;
+        // SQLite: bare columns come from the row that MAX() picked.
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT t.run_id, p.page_id, r.started_at, t.status, t.duration_ms, MAX(p.opened_at), p.closed_at
+             FROM tests t
+             JOIN runs r ON r.id = t.run_id
+             JOIN pages p ON p.run_id = t.run_id AND p.test_id = t.test_id
+             WHERE t.file = ?1 AND t.title_path = ?2 AND t.run_id != ?3
+               AND p.frames > 0 AND p.opened_at IS NOT NULL
+             GROUP BY t.run_id
+             ORDER BY r.started_at DESC",
+        )?;
+        let rows = stmt.query_map(params![file, title_path, exclude_run], |r| {
+            Ok(PriorPage {
+                run_id: r.get(0)?,
+                page_id: r.get(1)?,
+                run_started_at: r.get(2)?,
+                status: r.get(3)?,
+                duration_ms: r.get(4)?,
+                opened_at: r.get(5)?,
+                closed_at: r.get(6)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let row = row?;
+            if self.frame_path(&row.run_id, &row.page_id).exists() {
+                out.push(row);
+                if out.len() == limit {
+                    break;
+                }
+            }
+        }
+        Ok(out)
     }
 
     pub fn delete_run(&self, run_id: &str) -> Result<()> {

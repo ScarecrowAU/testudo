@@ -237,3 +237,46 @@ fn flaky_tests_pass_and_fail_across_recent_runs() {
     assert!(store.flaky_tests(2).unwrap().is_empty());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn prior_pages_finds_same_test_in_other_runs_with_frames() {
+    let (dir, store) = temp_store("prior");
+    let add = |run: &str, started: f64, page: &str, opened: f64, frames: bool| {
+        store
+            .conn
+            .execute(
+                "INSERT OR IGNORE INTO runs (id, started_at, status) VALUES (?1, ?2, 'passed')",
+                params![run, started],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT OR IGNORE INTO tests (run_id, test_id, title, title_path, file, status) VALUES (?1, 't', 'x', '[\"x\"]', 'a.spec.ts', 'passed')",
+                [run],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO pages (run_id, page_id, test_id, opened_at, frames) VALUES (?1, ?2, 't', ?3, 1)",
+                params![run, page, opened],
+            )
+            .unwrap();
+        if frames {
+            let mut w = FrameWriter::create(&store.frame_path(run, page)).unwrap();
+            w.append(opened, b"jpeg").unwrap();
+            w.flush().unwrap();
+        }
+    };
+    add("r0", 0.0, "p", 1.0, true);
+    add("r1", 10.0, "p", 11.0, false); // frames pruned
+    add("r2", 20.0, "first", 21.0, true);
+    add("r2", 20.0, "retry", 25.0, true);
+    add("r3", 30.0, "p", 31.0, true); // the current run
+    let prior = store.prior_pages("a.spec.ts", &["x".into()], "r3", 5).unwrap();
+    let got: Vec<(&str, &str)> = prior.iter().map(|p| (p.run_id.as_str(), p.page_id.as_str())).collect();
+    assert_eq!(got, [("r2", "retry"), ("r0", "p")]);
+    assert_eq!(store.prior_pages("a.spec.ts", &["x".into()], "r3", 1).unwrap().len(), 1);
+    std::fs::remove_dir_all(dir).unwrap();
+}

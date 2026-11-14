@@ -4,7 +4,12 @@
 
 use super::*;
 use crate::logic::{status_label, url_path};
+use std::sync::Arc;
+use testudo_protocol::TestStatus;
 use crate::state::{ConsoleFilter, FocusTab, NetFilter};
+
+/// An earlier run's recording beside the frame: (label, status, image).
+type ComparedCell = (String, Option<TestStatus>, Option<Arc<RenderImage>>);
 
 /// A step as shown in the focus view.
 #[derive(Clone)]
@@ -97,6 +102,27 @@ impl TestudoApp {
             focus.sync_lists,
         );
         let hover_label = focus.hover_label.clone().unwrap_or_default();
+        // Earlier runs of this test beside the frame: (label, status, image).
+        let compare_target = test.and_then(|t| t.file.clone().map(|f| (f, t.title_path.clone())));
+        let now = now_ms();
+        let compared: Option<Vec<ComparedCell>> = focus.compare.as_ref().map(|lanes| {
+            lanes
+                .iter()
+                .map(|l| {
+                    let status = l.prior.status.as_deref().map(|s| match s {
+                        "passed" => TestStatus::Passed,
+                        "failed" => TestStatus::Failed,
+                        "timedOut" => TestStatus::TimedOut,
+                        "skipped" => TestStatus::Skipped,
+                        "interrupted" => TestStatus::Interrupted,
+                        _ => TestStatus::Unknown,
+                    });
+                    let dur = l.prior.duration_ms.map(|d| format!(" · {}", fmt_dur(d))).unwrap_or_default();
+                    let label = format!("{} ({}){dur}", fmt_time(l.prior.run_started_at), fmt_ago(l.prior.run_started_at, now));
+                    (label, status, l.image.clone())
+                })
+                .collect()
+        });
         let title = pane_name(model, page).to_owned();
         let browser = page.browser.clone().unwrap_or_default();
         let location = test
@@ -240,7 +266,33 @@ impl TestudoApp {
                             .font_family(crate::fonts::mono())
                             .text_color(muted)
                             .child(l)
-                    })),
+                    }))
+                    .child(div().flex_1())
+                    .when(self.store.is_some() && compare_target.is_some(), |row| {
+                        let comparing = compared.is_some();
+                        row.child(
+                            Button::new("f-compare")
+                                .label(if comparing { "Hide comparison" } else { "Compare with previous runs" })
+                                .xsmall()
+                                .when(comparing, |b| b.primary())
+                                .when(!comparing, |b| b.ghost())
+                                .tooltip("Play this test's recordings from earlier runs alongside, in step")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let store = this.store.clone();
+                                    let target = compare_target.clone();
+                                    let mut retired = Vec::new();
+                                    if let Some(f) = this.view_mut(w).and_then(|v| v.focus.as_mut()) {
+                                        if f.compare.is_some() {
+                                            retired = f.close_compare();
+                                        } else if let (Some(store), Some((file, path))) = (store, target) {
+                                            f.open_compare(&file, &path, &store);
+                                        }
+                                    }
+                                    this.retired.extend(retired);
+                                    cx.notify();
+                                })),
+                        )
+                    }),
             );
 
         let copy_url = url.clone();
@@ -460,6 +512,65 @@ impl TestudoApp {
                         })),
                 )
             });
+
+        let frame: AnyElement = match compared {
+            None => frame.into_any_element(),
+            Some(lanes) if lanes.is_empty() => v_flex()
+                .flex_1()
+                .min_h_0()
+                .gap_1()
+                .child(div().text_xs().text_color(muted).child("No earlier recordings of this test (retention may have removed them)"))
+                .child(frame)
+                .into_any_element(),
+            Some(lanes) => {
+                let cell = |label: AnyElement, body: AnyElement| {
+                    v_flex().flex_1().min_w_0().min_h_0().gap_1().child(label).child(body)
+                };
+                let mut cells = vec![cell(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child("This run"))
+                        .child(pill(status_label(status), status_color))
+                        .into_any_element(),
+                    frame.into_any_element(),
+                )];
+                for (label, st, image) in lanes {
+                    let (_, stn) = status_icon(st);
+                    cells.push(cell(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(div().min_w_0().truncate().text_xs().text_color(muted).child(label))
+                            .child(pill(status_label(st), tone(stn, cx)))
+                            .into_any_element(),
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .rounded_md()
+                            .overflow_hidden()
+                            .border_1()
+                            .border_color(theme.border)
+                            .bg(theme.secondary.opacity(0.4))
+                            .children(image.map(|i| img(i).object_fit(ObjectFit::Contain).size_full()))
+                            .into_any_element(),
+                    ));
+                }
+                // One row for two recordings, a 2×2 grid beyond that.
+                let mut rows = Vec::new();
+                let mut it = cells.into_iter();
+                while let Some(a) = it.next() {
+                    let mut row = h_flex().flex_1().min_h_0().gap_2().child(a);
+                    row = match it.next() {
+                        Some(b) => row.child(b),
+                        None if rows.is_empty() => row,
+                        None => row.child(div().flex_1()),
+                    };
+                    rows.push(row);
+                }
+                v_flex().flex_1().min_h_0().gap_2().children(rows).into_any_element()
+            }
+        };
 
         let player = v_flex()
             .size_full()
