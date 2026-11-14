@@ -15,7 +15,7 @@ Native GUI test runner that controls, monitors and reports on multiple concurren
 | Go | 🗓️ Planned ³ | — | | |
 | Rust | 🗓️ Planned | — | | |
 
-¹ In browser mode (Playwright provider). ² Through its Vitest addon or a Playwright story suite. ³ Already found by Scan, not runnable yet. — means the runner drives no browser.
+<sub>¹ In browser mode (Playwright provider).</sub><br><sub>² Through its Vitest addon or a Playwright story suite.</sub><br><sub>³ Already found by Scan, not runnable yet.</sub><br><sub>— The runner drives no browser.</sub>
 
 - **Found by**: `playwright.config.*`; `vitest.config.*`, Vitest workspaces and `vite.config.*` with a `test` block; `go.mod`. Each suite uses the runner version installed in its own project, so a monorepo can mix versions.
 - **Results**: tests, steps (Playwright), skip reasons and tests not started yet, live and in History.
