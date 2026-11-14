@@ -140,7 +140,10 @@ impl Perf {
         let prev_start = self.last_frame.map(|(_, wall)| wall);
         self.last_frame = Some(start);
 
-        let in_burst = self.burst.as_ref().is_some_and(|b| b.last_input.elapsed() < BURST_QUIET);
+        let in_burst = self
+            .burst
+            .as_ref()
+            .is_some_and(|b| b.last_input.elapsed() < BURST_QUIET);
         if build >= SLOW_BUILD {
             let mut attrs = ctx.attrs();
             attrs.push(KeyValue::new("frame.measure", "build"));
@@ -194,7 +197,11 @@ impl Perf {
         let intervals = b.frames.saturating_sub(1).max(1);
         let avg_interval = b.total_interval / intervals;
         let avg_build = b.total_build / b.frames.max(1);
-        let span_secs = wall_end.duration_since(b.started).unwrap_or_default().as_secs_f64().max(0.001);
+        let span_secs = wall_end
+            .duration_since(b.started)
+            .unwrap_or_default()
+            .as_secs_f64()
+            .max(0.001);
         let fps = f64::from(b.frames) / span_secs;
         tracing::info!(
             area = b.area,
@@ -233,6 +240,10 @@ fn ms(d: Duration) -> f64 {
 /// frames worth reporting). No-op unless OTLP export is configured.
 fn record(name: &'static str, start: SystemTime, end: SystemTime, attrs: Vec<KeyValue>) {
     let tracer = global::tracer("testudo");
-    let mut span = tracer.span_builder(name).with_start_time(start).with_attributes(attrs).start(&tracer);
+    let mut span = tracer
+        .span_builder(name)
+        .with_start_time(start)
+        .with_attributes(attrs)
+        .start(&tracer);
     span.end_with_timestamp(end);
 }

@@ -163,7 +163,9 @@ pub fn fallback_data_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("XDG_DATA_HOME") {
         return PathBuf::from(d).join("testudo");
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
     home.join(".local/share/testudo")
 }
 
@@ -233,7 +235,10 @@ impl Store {
     pub fn open(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         let conn = open_conn(dir)?;
-        Ok(Self { dir: dir.to_owned(), conn })
+        Ok(Self {
+            dir: dir.to_owned(),
+            conn,
+        })
     }
 
     pub fn dir(&self) -> &Path {
@@ -395,7 +400,9 @@ impl Store {
 
     /// (finished runs, bytes of recordings on disk).
     pub fn usage(&self) -> Result<(u64, u64)> {
-        let runs: i64 = self.conn.query_row("SELECT COUNT(*) FROM runs WHERE status != 'running'", [], |r| r.get(0))?;
+        let runs: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM runs WHERE status != 'running'", [], |r| r.get(0))?;
         Ok((runs as u64, dir_size(&self.dir.join("runs"))))
     }
 
@@ -529,6 +536,12 @@ pub(crate) fn frame_path(dir: &Path, run_id: &str, page_id: &str) -> PathBuf {
 
 fn sanitize(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }

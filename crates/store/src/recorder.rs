@@ -89,7 +89,12 @@ impl Writer {
 
     fn commit(&mut self) {
         // Debug level: under light load this runs per message.
-        let _span = debug_span!("recorder_commit", events = self.batched, frame_files = self.frames.len()).entered();
+        let _span = debug_span!(
+            "recorder_commit",
+            events = self.batched,
+            frame_files = self.frames.len()
+        )
+        .entered();
         for w in self.frames.values_mut() {
             if let Err(e) = w.flush() {
                 warn!("recorder: flushing frames: {e:#}");
@@ -151,7 +156,12 @@ impl Writer {
     fn derive(&mut self, run_id: &str, at: f64, event: Event) -> Result<()> {
         let c = &self.conn;
         match event {
-            Event::RunStarted { label, runner, cwd, args } => {
+            Event::RunStarted {
+                label,
+                runner,
+                cwd,
+                args,
+            } => {
                 c.execute(
                     "UPDATE runs SET label = ?2, runner = ?3, cwd = ?4, args = ?5, started_at = ?6 WHERE id = ?1",
                     params![run_id, label, runner, cwd, serde_json::to_string(&args)?, at],
@@ -328,7 +338,8 @@ fn recover_orphans(conn: &Connection) -> Result<()> {
     let me = std::process::id() as i64;
     let orphans: Vec<(String, Option<i64>)> = {
         let mut stmt = conn.prepare("SELECT id, owner_pid FROM runs WHERE status = 'running'")?;
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?
     };
     for (id, pid) in orphans {
         if pid.is_some_and(|p| p != me && process_alive(p)) {

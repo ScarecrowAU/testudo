@@ -78,7 +78,10 @@ fn main() -> Result<()> {
 }
 
 fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).map(String::as_str)
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .map(String::as_str)
 }
 
 #[tokio::main]
@@ -90,7 +93,9 @@ async fn run(args: &[String], data: &std::path::Path) -> Result<i32> {
     let record = !ours.iter().any(|a| a == "--no-record");
     let quiet = ours.iter().any(|a| a == "--quiet");
     let positional: Vec<&String> = ours.iter().filter(|a| !a.starts_with("--")).collect();
-    let Some((dir, filters)) = positional.split_last() else { bail!(USAGE) };
+    let Some((dir, filters)) = positional.split_last() else {
+        bail!(USAGE)
+    };
     let dir = PathBuf::from(dir.as_str());
     if !dir.is_dir() {
         bail!("{} is not a directory\n\n{USAGE}", dir.display());
@@ -99,7 +104,9 @@ async fn run(args: &[String], data: &std::path::Path) -> Result<i32> {
     let specs: Vec<RunSpec> = match filters.first().and_then(|f| f.strip_prefix("cmd:")) {
         Some(program) => vec![RunSpec {
             label: format!("command · {program}"),
-            kind: RunnerKind::Command { program: program.to_owned() },
+            kind: RunnerKind::Command {
+                program: program.to_owned(),
+            },
             cwd: dir.clone(),
             config: None,
             args: runner_args,
@@ -129,14 +136,13 @@ async fn run(args: &[String], data: &std::path::Path) -> Result<i32> {
 
     let hub = Hub::default();
     let mut rx = hub.subscribe();
-    let recorder = if record { Some(Recorder::spawn(data, &hub, Retention::from_env())?) } else { None };
+    let recorder = if record {
+        Some(Recorder::spawn(data, &hub, Retention::from_env())?)
+    } else {
+        None
+    };
     let ingest = IngestServer::bind(hub.clone())?;
-    let orch = Orchestrator::new(
-        &ingest,
-        hub.clone(),
-        adapters_dir(),
-        tokio::runtime::Handle::current(),
-    );
+    let orch = Orchestrator::new(&ingest, hub.clone(), adapters_dir(), tokio::runtime::Handle::current());
     orch.set_recording(&testudo_core::settings::Settings::load());
 
     let mut labels: HashMap<String, String> = HashMap::new();
@@ -193,7 +199,11 @@ async fn run(args: &[String], data: &std::path::Path) -> Result<i32> {
     if record {
         eprintln!("recorded in {}", data.display());
     }
-    let worst = results.iter().map(|(_, c)| c.unwrap_or(1)).find(|c| *c != 0).unwrap_or(0);
+    let worst = results
+        .iter()
+        .map(|(_, c)| c.unwrap_or(1))
+        .find(|c| *c != 0)
+        .unwrap_or(0);
     Ok(if cancelled { 130 } else { worst })
 }
 
@@ -203,7 +213,12 @@ fn print_suites(suites: &[Suite]) {
         return;
     }
     for s in suites {
-        let version = s.tool.as_ref().and_then(|t| t.version.as_deref()).map(|v| format!(" {v}")).unwrap_or_default();
+        let version = s
+            .tool
+            .as_ref()
+            .and_then(|t| t.version.as_deref())
+            .map(|v| format!(" {v}"))
+            .unwrap_or_default();
         let state = if s.runnable() { "ready" } else { "-" };
         println!("{state:<6} {}{version}    [{}]", s.name, s.id);
         for p in &s.problems {
@@ -247,9 +262,15 @@ fn stop_signals() -> Result<tokio::sync::mpsc::UnboundedReceiver<&'static str>> 
 fn history(args: &[String], data: &std::path::Path) -> Result<()> {
     let limit = flag_value(args, "--limit").map(str::parse).transpose()?.unwrap_or(20);
     let store = Store::open(data)?;
-    println!("{:<18} {:<11} {:>5} {:>5} {:>5} {:>8}  label", "run", "status", "pass", "fail", "skip", "secs");
+    println!(
+        "{:<18} {:<11} {:>5} {:>5} {:>5} {:>8}  label",
+        "run", "status", "pass", "fail", "skip", "secs"
+    );
     for r in store.list_runs(limit)? {
-        let secs = r.ended_at.map(|e| format!("{:.1}", (e - r.started_at) / 1000.0)).unwrap_or_default();
+        let secs = r
+            .ended_at
+            .map(|e| format!("{:.1}", (e - r.started_at) / 1000.0))
+            .unwrap_or_default();
         println!(
             "{:<18} {:<11} {:>5} {:>5} {:>5} {:>8}  {}",
             r.id, r.status, r.passed, r.failed, r.skipped, secs, r.label
@@ -272,7 +293,12 @@ fn show(run_id: &str, data: &std::path::Path) -> Result<()> {
                 results.retain(|(id, _)| id != test_id);
                 results.push((test_id.clone(), format!("…  {title}")));
             }
-            Event::TestEnd { test_id, status, duration_ms, .. } => {
+            Event::TestEnd {
+                test_id,
+                status,
+                duration_ms,
+                ..
+            } => {
                 if let Some(r) = results.iter_mut().find(|(id, _)| id == test_id) {
                     let title = r.1[3..].to_owned();
                     r.1 = format!("{status:?} {title} ({:.0}ms)", duration_ms.unwrap_or(0.0));
@@ -294,7 +320,11 @@ fn show(run_id: &str, data: &std::path::Path) -> Result<()> {
             p.browser.unwrap_or_default(),
             p.frames,
             p.test_id.unwrap_or_default(),
-            if file.exists() { file.display().to_string() } else { "(no recording)".into() }
+            if file.exists() {
+                file.display().to_string()
+            } else {
+                "(no recording)".into()
+            }
         );
     }
     println!("\n{} events", events.len());
@@ -308,7 +338,10 @@ fn export(args: &[String], data: &std::path::Path) -> Result<()> {
     export_mp4(
         &store.frame_path(run_id, page_id),
         std::path::Path::new(out),
-        &ExportOptions { fps, ..Default::default() },
+        &ExportOptions {
+            fps,
+            ..Default::default()
+        },
     )?;
     println!("wrote {out}");
     Ok(())

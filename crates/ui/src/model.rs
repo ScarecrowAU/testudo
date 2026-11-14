@@ -288,7 +288,9 @@ impl Model {
                     }
                 }
             }
-            Event::Console { page_id, level, text, .. } => {
+            Event::Console {
+                page_id, level, text, ..
+            } => {
                 if let Some(p) = self.pages.get_mut(&page_key(&page_id)) {
                     push_capped(&mut p.console, ConsoleRow { at, level, text }, MAX_ROWS);
                 }
@@ -301,7 +303,9 @@ impl Model {
     /// Install a decoded frame. Returns the frame it replaced, which the caller
     /// must retire.
     pub fn apply_frame(&mut self, key: &PageKey, at: f64, image: Arc<RenderImage>) -> Option<Arc<RenderImage>> {
-        let Some(page) = self.pages.get_mut(key) else { return Some(image) };
+        let Some(page) = self.pages.get_mut(key) else {
+            return Some(image);
+        };
         if at < page.last_frame_ts {
             return Some(image);
         }
@@ -314,7 +318,6 @@ impl Model {
     pub fn take_frames(&mut self) -> Vec<Arc<RenderImage>> {
         self.pages.values_mut().filter_map(|p| p.frame.take()).collect()
     }
-
 }
 
 fn apply_run_event(run: &mut Run, at: f64, event: Event) {
@@ -356,7 +359,14 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
                 });
             }
         }
-        Event::TestQueued { test_id, title, title_path, file, line, project } => {
+        Event::TestQueued {
+            test_id,
+            title,
+            title_path,
+            file,
+            line,
+            project,
+        } => {
             if run.test(&test_id).is_none() {
                 run.tests.push(Test {
                     id: test_id,
@@ -398,7 +408,10 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
             }
         }
         Event::StepEnd {
-            test_id, step_id, error, ..
+            test_id,
+            step_id,
+            error,
+            ..
         } => {
             if let Some(t) = run.test_mut(&test_id) {
                 if let Some(s) = t.steps.iter_mut().rev().find(|s| s.id == step_id) {
@@ -406,7 +419,12 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
                     s.error = error;
                 }
                 // The innermost step still running, if any.
-                t.current_step = t.steps.iter().rev().find(|s| s.ended.is_none()).map(|s| s.title.clone());
+                t.current_step = t
+                    .steps
+                    .iter()
+                    .rev()
+                    .find(|s| s.ended.is_none())
+                    .map(|s| s.title.clone());
             }
         }
         Event::TestEnd {
@@ -435,7 +453,15 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
         }
         Event::AdapterLog { level, message } => {
             let text = format!("[{level}] {message}");
-            push_capped(&mut run.output, OutputLine { at, source: Source::Adapter, text }, MAX_LINES)
+            push_capped(
+                &mut run.output,
+                OutputLine {
+                    at,
+                    source: Source::Adapter,
+                    text,
+                },
+                MAX_LINES,
+            )
         }
         Event::RunStarted { label, runner, cwd, .. } => {
             run.label = label;

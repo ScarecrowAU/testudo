@@ -104,7 +104,9 @@ fn installed() -> Vec<(String, PathBuf)> {
 
     let mut out = Vec::new();
     for (root, bin_suffix) in [(nvm, "bin"), (fnm, "installation/bin")] {
-        let Ok(entries) = std::fs::read_dir(&root) else { continue };
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
         for e in entries.flatten() {
             let bin = e.path().join(bin_suffix);
             if bin.join("node").exists() {

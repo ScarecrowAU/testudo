@@ -17,8 +17,16 @@ use tokio::sync::mpsc;
 use crate::model::PageKey;
 
 pub enum UiMsg {
-    Event { run_id: String, at: f64, event: Event },
-    Frame { key: PageKey, at: f64, image: Arc<RenderImage> },
+    Event {
+        run_id: String,
+        at: f64,
+        event: Event,
+    },
+    Frame {
+        key: PageKey,
+        at: f64,
+        image: Arc<RenderImage>,
+    },
 }
 
 struct Slot {

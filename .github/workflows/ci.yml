@@ -37,6 +37,17 @@ jobs:
               - "Makefile"
               - ".github/workflows/ci.yml"
 
+  # Cheap, needs no build: runs on every change.
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
   test:
     name: ${{ matrix.name }}
     needs: changes
@@ -109,17 +120,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/*.tar.gz --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
 
-  # The one check branch rules require: passes when the tests passed or were
-  # skipped as irrelevant, fails otherwise. (A skipped matrix job reports no
-  # per-platform checks, so those can't be required directly.)
+  # The one check branch rules require: passes when formatting is clean and
+  # the tests passed or were skipped as irrelevant, fails otherwise. (A skipped
+  # matrix job reports no per-platform checks, so those can't be required.)
   ci:
     name: CI
     if: always()
-    needs: [changes, test]
+    needs: [changes, fmt, test]
     runs-on: ubuntu-24.04
     steps:
       - name: Check results
         run: |
-          echo "changes=${{ needs.changes.result }} test=${{ needs.test.result }}"
+          echo "changes=${{ needs.changes.result }} fmt=${{ needs.fmt.result }} test=${{ needs.test.result }}"
           [ "${{ needs.changes.result }}" = success ] || exit 1
+          [ "${{ needs.fmt.result }}" = success ] || exit 1
           case "${{ needs.test.result }}" in success|skipped) ;; *) exit 1 ;; esac

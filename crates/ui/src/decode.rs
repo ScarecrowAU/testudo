@@ -28,13 +28,15 @@ fn pool() -> &'static Mutex<Sender<Job>> {
         let rx = Arc::new(Mutex::new(rx));
         for n in 0..WORKERS {
             let rx = rx.clone();
-            let _ = std::thread::Builder::new().name(format!("testudo-decode-{n}")).spawn(move || {
-                loop {
-                    let job = rx.lock().ok().and_then(|r| r.recv().ok());
-                    let Some((jpeg, reply)) = job else { return };
-                    let _ = reply.send(crate::bridge::decode_jpeg(&jpeg));
-                }
-            });
+            let _ = std::thread::Builder::new()
+                .name(format!("testudo-decode-{n}"))
+                .spawn(move || {
+                    loop {
+                        let job = rx.lock().ok().and_then(|r| r.recv().ok());
+                        let Some((jpeg, reply)) = job else { return };
+                        let _ = reply.send(crate::bridge::decode_jpeg(&jpeg));
+                    }
+                });
         }
         Mutex::new(tx)
     })

@@ -55,7 +55,10 @@ impl FrameWriter {
     }
 
     pub fn append(&mut self, at: f64, jpeg: &[u8]) -> Result<()> {
-        let len = u32::try_from(jpeg.len()).ok().filter(|l| *l < REF_FLAG).context("frame too large")?;
+        let len = u32::try_from(jpeg.len())
+            .ok()
+            .filter(|l| *l < REF_FLAG)
+            .context("frame too large")?;
         let mut h = DefaultHasher::new();
         h.write(jpeg);
         let key = (h.finish(), len);
@@ -132,7 +135,11 @@ impl FrameIndex {
                 entries.push(FrameEntry { at, offset, len });
             } else {
                 payloads.insert(body, raw_len);
-                entries.push(FrameEntry { at, offset: body, len: raw_len });
+                entries.push(FrameEntry {
+                    at,
+                    offset: body,
+                    len: raw_len,
+                });
                 r.seek_relative(record_len as i64)?;
             }
             pos = body + record_len;
@@ -201,7 +208,10 @@ mod tests {
         drop(w);
 
         let size = std::fs::metadata(&path).unwrap().len();
-        assert!(size < 2 * 5000 + 5 * 20 + 100, "repeats were not deduplicated: {size} bytes");
+        assert!(
+            size < 2 * 5000 + 5 * 20 + 100,
+            "repeats were not deduplicated: {size} bytes"
+        );
 
         let mut idx = FrameIndex::open(&path).unwrap();
         assert_eq!(idx.entries.len(), 5);

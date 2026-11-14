@@ -17,8 +17,8 @@ use testudo_store::export::{ExportOptions, export_mp4};
 use testudo_store::frames::FrameIndex;
 use testudo_store::{PriorPage, RunRow, Store};
 
-use crate::perf::ui_decode;
 use crate::model::{Effect, Model, Page, PageKey};
+use crate::perf::ui_decode;
 
 pub type Retired = Vec<Arc<RenderImage>>;
 
@@ -119,8 +119,13 @@ impl PagesView {
     /// grid (they stay in history and in the focus view's comparison). The
     /// focused page stays so an open focus view isn't pulled away.
     pub fn drop_finished_run_pages(&mut self, retired: &mut Retired) {
-        let finished: std::collections::HashSet<&str> =
-            self.model.runs.iter().filter(|r| !r.is_running()).map(|r| r.id.as_str()).collect();
+        let finished: std::collections::HashSet<&str> = self
+            .model
+            .runs
+            .iter()
+            .filter(|r| !r.is_running())
+            .map(|r| r.id.as_str())
+            .collect();
         let focused = self.focus.as_ref().filter(|f| f.recorded.is_none()).map(|f| &f.key);
         let gone: Vec<PageKey> = self
             .model
@@ -304,12 +309,23 @@ impl Compare {
         let last_start = self.candidates.len().saturating_sub(self.count);
         self.index = self.index.min(last_start);
         let mut old = std::mem::take(&mut self.lanes);
-        let wanted: Vec<PriorPage> = self.candidates.iter().skip(self.index).take(self.count).cloned().collect();
+        let wanted: Vec<PriorPage> = self
+            .candidates
+            .iter()
+            .skip(self.index)
+            .take(self.count)
+            .cloned()
+            .collect();
         self.lanes = wanted
             .into_iter()
-            .map(|p| match old.iter().position(|l| l.prior.run_id == p.run_id && l.prior.page_id == p.page_id) {
-                Some(i) => old.swap_remove(i),
-                None => CompareLane::new(p, store),
+            .map(|p| {
+                match old
+                    .iter()
+                    .position(|l| l.prior.run_id == p.run_id && l.prior.page_id == p.page_id)
+                {
+                    Some(i) => old.swap_remove(i),
+                    None => CompareLane::new(p, store),
+                }
             })
             .collect();
         old.into_iter().filter_map(|mut l| l.image.take()).collect()
@@ -353,7 +369,11 @@ impl CompareLane {
 
     /// Length of this recording: page lifetime, or its last frame if later.
     pub fn length(&self) -> f64 {
-        let last = self.frames.as_ref().and_then(|f| f.entries.last()).map_or(0.0, |e| e.at - self.prior.opened_at);
+        let last = self
+            .frames
+            .as_ref()
+            .and_then(|f| f.entries.last())
+            .map_or(0.0, |e| e.at - self.prior.opened_at);
         self.prior.closed_at.map_or(0.0, |c| c - self.prior.opened_at).max(last)
     }
 }
@@ -409,7 +429,12 @@ impl PageFocus {
             .inspect_err(|e| tracing::warn!("comparison query failed: {e:#}"))
             .unwrap_or_default();
         tracing::Span::current().record("runs", candidates.len());
-        let mut c = Compare { candidates, index: 0, count: 1, lanes: Vec::new() };
+        let mut c = Compare {
+            candidates,
+            index: 0,
+            count: 1,
+            lanes: Vec::new(),
+        };
         let _ = c.refresh(store);
         self.compare = Some(c);
     }
@@ -459,19 +484,24 @@ impl PageFocus {
                 .flatten();
             lane.by_time_fallback = by_step && stepped.is_none();
             let at = stepped.unwrap_or(lane.prior.opened_at + (t - page.opened_at));
-            let Some(f) = lane.frames.as_mut().filter(|f| !f.entries.is_empty()) else { continue };
+            let Some(f) = lane.frames.as_mut().filter(|f| !f.entries.is_empty()) else {
+                continue;
+            };
             let i = f.index_at(at).unwrap_or(0);
             decoding |= lane.loader.update(i, |i| f.read(i).ok(), &mut lane.image, retired);
         }
         decoding
     }
 
-
     /// (start, end) of the page's timeline; a running page's end is now.
     pub fn bounds(&self, page: &Page) -> (f64, f64) {
         let start = page.opened_at;
         let end = page.closed_at.unwrap_or_else(testudo_core::now_ms);
-        let last_frame = self.frames.as_ref().and_then(|f| f.entries.last()).map_or(start, |e| e.at);
+        let last_frame = self
+            .frames
+            .as_ref()
+            .and_then(|f| f.entries.last())
+            .map_or(start, |e| e.at);
         // A finished page's timeline also covers longer compared recordings.
         let compared = match (page.closed_at, &self.compare) {
             (Some(_), Some(c)) => start + c.lanes.iter().map(CompareLane::length).fold(0.0, f64::max),
@@ -491,7 +521,9 @@ impl PageFocus {
     /// the scrub time. Returns false when there is no recording to read.
     pub fn ensure_index(&mut self, page: &Page, store: Option<&Store>) -> bool {
         let Some(store) = store else { return false };
-        let stale = self.indexed_at.is_none_or(|t| t.elapsed().as_millis() >= REINDEX_EVERY_MS);
+        let stale = self
+            .indexed_at
+            .is_none_or(|t| t.elapsed().as_millis() >= REINDEX_EVERY_MS);
         let needs = match &self.frames {
             None => self.indexed_at.is_none() || (page.closed_at.is_none() && stale),
             Some(f) => {
@@ -604,7 +636,9 @@ pub struct Replay {
 impl Replay {
     #[tracing::instrument(level = "info", name = "replay_load", skip(store), fields(events = tracing::field::Empty))]
     pub fn load(store: &Store, run_id: &str) -> anyhow::Result<Self> {
-        let run = store.run(run_id)?.ok_or_else(|| anyhow::anyhow!("run {run_id} not found"))?;
+        let run = store
+            .run(run_id)?
+            .ok_or_else(|| anyhow::anyhow!("run {run_id} not found"))?;
         let events = store.run_events(run_id)?;
         tracing::Span::current().record("events", events.len());
         let start = run.started_at;
@@ -746,7 +780,6 @@ impl Replay {
         true
     }
 
-
     /// A focus view over the whole run's events, at the replay time.
     pub fn open_focus(&mut self, key: PageKey) {
         let mut full = Model::new();
@@ -789,7 +822,9 @@ impl Exporter {
 
     pub fn start(&mut self, page: &PageKey, store: &Store) {
         let frames = store.frame_path(&page.run_id, &page.page_id);
-        let out = store.exports_dir().join(format!("{}-{}.mp4", page.run_id, page.page_id));
+        let out = store
+            .exports_dir()
+            .join(format!("{}-{}.mp4", page.run_id, page.page_id));
         let (tx, rx) = channel();
         let span = tracing::info_span!("export_mp4", run.id = %page.run_id, page.id = %page.page_id);
         std::thread::spawn(move || {

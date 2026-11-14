@@ -12,8 +12,8 @@
 //! JSON uses camelCase field names and a `type` tag. The JS side lives in
 //! `adapters/js/transport.mjs` and must stay in sync with this file.
 
-use bytes::{Buf, BufMut, BytesMut};
 pub use bytes::Bytes;
+use bytes::{Buf, BufMut, BytesMut};
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -287,8 +287,7 @@ pub fn decode(buf: &mut BytesMut) -> Result<Option<Message>, DecodeError> {
                 return Err(DecodeError::Malformed("frame header overruns body".into()));
             }
             let header_bytes = body.split_to(hlen);
-            let header = serde_json::from_slice(&header_bytes)
-                .map_err(|e| DecodeError::Malformed(e.to_string()))?;
+            let header = serde_json::from_slice(&header_bytes).map_err(|e| DecodeError::Malformed(e.to_string()))?;
             Ok(Some(Message::Frame { header, jpeg: body }))
         }
         other => Err(DecodeError::UnknownKind(other)),
@@ -373,9 +372,17 @@ mod tests {
         wire.put_u32((json.len() + 1) as u32);
         wire.put_u8(KIND_EVENT);
         wire.put_slice(json);
-        encode_event(&Event::RunEnd { status: "passed".into() }, &mut wire);
+        encode_event(
+            &Event::RunEnd {
+                status: "passed".into(),
+            },
+            &mut wire,
+        );
 
         assert!(matches!(decode(&mut wire), Err(DecodeError::Malformed(_))));
-        assert!(matches!(decode(&mut wire), Ok(Some(Message::Event(Event::RunEnd { .. })))));
+        assert!(matches!(
+            decode(&mut wire),
+            Ok(Some(Message::Event(Event::RunEnd { .. })))
+        ));
     }
 }

@@ -76,8 +76,8 @@ impl IngestServer {
         remove_stale_sockets(&dir);
         let path = dir.join(format!("testudo-{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&path);
-        let listener = UnixListener::bind(&path)
-            .with_context(|| format!("binding ingest socket at {}", path.display()))?;
+        let listener =
+            UnixListener::bind(&path).with_context(|| format!("binding ingest socket at {}", path.display()))?;
 
         let connections = Connections::default();
         let conns = connections.clone();
@@ -96,17 +96,19 @@ impl IngestServer {
                             frames = field::Empty,
                             bytes = field::Empty,
                         );
-                        tokio::spawn(async move {
-                            let mut run_id = None;
-                            if let Err(e) = handle_connection(stream, hub, &conns, &mut run_id).await {
-                                debug!("adapter connection ended: {e:#}");
+                        tokio::spawn(
+                            async move {
+                                let mut run_id = None;
+                                if let Err(e) = handle_connection(stream, hub, &conns, &mut run_id).await {
+                                    debug!("adapter connection ended: {e:#}");
+                                }
+                                conns.update(|s| match run_id {
+                                    Some(id) => *s.by_run.entry(id).or_default() -= 1,
+                                    None => s.pending -= 1,
+                                });
                             }
-                            conns.update(|s| match run_id {
-                                Some(id) => *s.by_run.entry(id).or_default() -= 1,
-                                None => s.pending -= 1,
-                            });
-                        }
-                        .instrument(span));
+                            .instrument(span),
+                        );
                     }
                     Err(e) => warn!("ingest accept failed: {e}"),
                 }
@@ -200,7 +202,13 @@ async fn read_messages(
                 Ok(Some(msg)) => {
                     if run_id.is_none() {
                         match &msg {
-                            Message::Event(Event::Hello { run_id: Some(id), role, runner, pid, .. }) => {
+                            Message::Event(Event::Hello {
+                                run_id: Some(id),
+                                role,
+                                runner,
+                                pid,
+                                ..
+                            }) => {
                                 let span = Span::current();
                                 span.record("run.id", id.as_str());
                                 span.record("adapter", format!("{role:?} ({runner}, pid {pid})"));

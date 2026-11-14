@@ -48,10 +48,7 @@ fn main() -> Result<()> {
             _ => startup.project_dir = Some(PathBuf::from(arg)),
         }
     }
-    let project_dir = startup
-        .project_dir
-        .clone()
-        .unwrap_or_else(default_project_dir);
+    let project_dir = startup.project_dir.clone().unwrap_or_else(default_project_dir);
     startup.project_dir = Some(project_dir);
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
@@ -110,7 +107,11 @@ fn main() -> Result<()> {
         app::bind_keys(cx);
 
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1400.), px(900.)), cx))),
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                None,
+                size(px(1400.), px(900.)),
+                cx,
+            ))),
             titlebar: Some(TitlebarOptions {
                 title: Some("Testudo".into()),
                 ..Default::default()
@@ -155,7 +156,23 @@ fn main() -> Result<()> {
 
 // gpui-kit's `Assets` embeds only the icons its components use; add the
 // player's media icons.
-gpui_kit::assets::icon_assets!(MediaIcons, [Play, Pause, SkipBack, StepBack, StepForward, Settings, RotateCcw, Columns2, ChevronLeft, ChevronRight, Minus, Plus]);
+gpui_kit::assets::icon_assets!(
+    MediaIcons,
+    [
+        Play,
+        Pause,
+        SkipBack,
+        StepBack,
+        StepForward,
+        Settings,
+        RotateCcw,
+        Columns2,
+        ChevronLeft,
+        ChevronRight,
+        Minus,
+        Plus
+    ]
+);
 
 struct AppAssets;
 
@@ -206,5 +223,8 @@ fn default_project_dir() -> PathBuf {
     if cwd.parent().is_some() {
         return cwd;
     }
-    std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from).unwrap_or(cwd)
+    std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or(cwd)
 }

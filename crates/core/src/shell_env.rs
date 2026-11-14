@@ -115,7 +115,10 @@ mod tests {
 
     #[test]
     fn path_merge_puts_shell_first_without_duplicates() {
-        assert_eq!(merge_path("/brew/bin:/usr/bin", "/usr/bin:/bin:/brew/bin"), "/brew/bin:/usr/bin:/bin");
+        assert_eq!(
+            merge_path("/brew/bin:/usr/bin", "/usr/bin:/bin:/brew/bin"),
+            "/brew/bin:/usr/bin:/bin"
+        );
         assert_eq!(merge_path("", "/usr/bin"), "/usr/bin");
     }
 }
