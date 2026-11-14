@@ -1,32 +1,46 @@
 name: CI
 
-# Only changes that can affect the build or tests run CI. Path filters are
-# not applied to tag pushes, so releases always build.
 on:
   push:
     branches: [main]
     tags: ["v*.*"]
-    paths: &code
-      - "crates/**"
-      - "adapters/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "Makefile"
-      - ".github/workflows/ci.yml"
   pull_request:
-    paths: *code
   workflow_dispatch:
 
+# Superseded PR runs are cancelled; main runs finish so the cache is saved.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Filtered per job, not with `on.paths`, so a docs-only PR still reports
+  # the required `CI` check instead of leaving it pending.
+  changes:
+    name: Changes
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.filter.outputs.code == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            code:
+              - "crates/**"
+              - "adapters/**"
+              - "Cargo.toml"
+              - "Cargo.lock"
+              - "Makefile"
+              - ".github/workflows/ci.yml"
+
   test:
     name: ${{ matrix.name }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -94,3 +108,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/*.tar.gz --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+
+  # The one check branch rules require: passes when the tests passed or were
+  # skipped as irrelevant, fails otherwise. (A skipped matrix job reports no
+  # per-platform checks, so those can't be required directly.)
+  ci:
+    name: CI
+    if: always()
+    needs: [changes, test]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check results
+        run: |
+          echo "changes=${{ needs.changes.result }} test=${{ needs.test.result }}"
+          [ "${{ needs.changes.result }}" = success ] || exit 1
+          case "${{ needs.test.result }}" in success|skipped) ;; *) exit 1 ;; esac
