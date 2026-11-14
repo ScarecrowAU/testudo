@@ -282,11 +282,37 @@ pub struct PageFocus {
 pub const COMPARE_HISTORY: usize = 50;
 
 /// Earlier recordings of the focused test, newest first, with one loaded.
+/// At most this many earlier runs are shown at once.
+pub const MAX_COMPARED: usize = 4;
+
 pub struct Compare {
     pub candidates: Vec<PriorPage>,
-    /// Which candidate is shown (0 = the most recent earlier run).
+    /// First candidate shown (0 = the most recent earlier run).
     pub index: usize,
-    pub lane: Option<CompareLane>,
+    /// How many earlier runs are shown (1..=MAX_COMPARED).
+    pub count: usize,
+    /// The shown ones, `candidates[index..index + count]`, loaded.
+    pub lanes: Vec<CompareLane>,
+}
+
+impl Compare {
+    /// Load the lanes for the current window, keeping ones already loaded;
+    /// returns the images of lanes no longer shown.
+    fn refresh(&mut self, store: &Store) -> Retired {
+        self.count = self.count.clamp(1, MAX_COMPARED);
+        let last_start = self.candidates.len().saturating_sub(self.count);
+        self.index = self.index.min(last_start);
+        let mut old = std::mem::take(&mut self.lanes);
+        let wanted: Vec<PriorPage> = self.candidates.iter().skip(self.index).take(self.count).cloned().collect();
+        self.lanes = wanted
+            .into_iter()
+            .map(|p| match old.iter().position(|l| l.prior.run_id == p.run_id && l.prior.page_id == p.page_id) {
+                Some(i) => old.swap_remove(i),
+                None => CompareLane::new(p, store),
+            })
+            .collect();
+        old.into_iter().filter_map(|mut l| l.image.take()).collect()
+    }
 }
 
 pub struct CompareLane {
@@ -382,29 +408,39 @@ impl PageFocus {
             .inspect_err(|e| tracing::warn!("comparison query failed: {e:#}"))
             .unwrap_or_default();
         tracing::Span::current().record("runs", candidates.len());
-        let lane = candidates.first().cloned().map(|p| CompareLane::new(p, store));
-        self.compare = Some(Compare { candidates, index: 0, lane });
+        let mut c = Compare { candidates, index: 0, count: 1, lanes: Vec::new() };
+        let _ = c.refresh(store);
+        self.compare = Some(c);
     }
 
-    /// Show an older (`delta` > 0) or newer (< 0) earlier recording.
+    /// Move the shown window to older (`delta` > 0) or newer (< 0) runs.
     pub fn step_compare(&mut self, delta: isize, store: &Store) -> Retired {
         let Some(c) = &mut self.compare else { return Vec::new() };
-        let last = c.candidates.len().saturating_sub(1) as isize;
-        let index = (c.index as isize + delta).clamp(0, last) as usize;
-        if index == c.index || c.candidates.is_empty() {
+        let index = (c.index as isize + delta).max(0) as usize;
+        if index == c.index {
             return Vec::new();
         }
         c.index = index;
-        let old = c.lane.replace(CompareLane::new(c.candidates[index].clone(), store));
-        old.and_then(|mut l| l.image.take()).into_iter().collect()
+        c.refresh(store)
+    }
+
+    /// Show one more (`delta` > 0) or one fewer earlier run.
+    pub fn resize_compare(&mut self, delta: isize, store: &Store) -> Retired {
+        let Some(c) = &mut self.compare else { return Vec::new() };
+        let count = (c.count as isize + delta).clamp(1, MAX_COMPARED as isize) as usize;
+        if count == c.count {
+            return Vec::new();
+        }
+        c.count = count;
+        c.refresh(store)
     }
 
     pub fn close_compare(&mut self) -> Retired {
         self.compare
             .take()
-            .and_then(|c| c.lane)
-            .and_then(|mut l| l.image.take())
             .into_iter()
+            .flat_map(|c| c.lanes)
+            .filter_map(|mut l| l.image.take())
             .collect()
     }
 
@@ -415,17 +451,18 @@ impl PageFocus {
     pub fn update_compare(&mut self, page: &Page, steps: &[(f64, String)], retired: &mut Retired) -> bool {
         let t = self.t.min(self.bounds(page).1);
         let by_step = self.compare_by_step;
-        if let Some(lane) = self.compare.as_mut().and_then(|c| c.lane.as_mut()) {
+        let mut decoding = false;
+        for lane in self.compare.iter_mut().flat_map(|c| c.lanes.iter_mut()) {
             let stepped = by_step
                 .then(|| crate::logic::align_by_step(steps, &lane.steps, t, page.opened_at, lane.prior.opened_at))
                 .flatten();
             lane.by_time_fallback = by_step && stepped.is_none();
             let at = stepped.unwrap_or(lane.prior.opened_at + (t - page.opened_at));
-            let Some(f) = lane.frames.as_mut().filter(|f| !f.entries.is_empty()) else { return false };
+            let Some(f) = lane.frames.as_mut().filter(|f| !f.entries.is_empty()) else { continue };
             let i = f.index_at(at).unwrap_or(0);
-            return lane.loader.update(i, |i| f.read(i).ok(), &mut lane.image, retired);
+            decoding |= lane.loader.update(i, |i| f.read(i).ok(), &mut lane.image, retired);
         }
-        false
+        decoding
     }
 
 
@@ -434,9 +471,9 @@ impl PageFocus {
         let start = page.opened_at;
         let end = page.closed_at.unwrap_or_else(testudo_core::now_ms);
         let last_frame = self.frames.as_ref().and_then(|f| f.entries.last()).map_or(start, |e| e.at);
-        // A finished page's timeline also covers a longer compared recording.
-        let compared = match (page.closed_at, self.compare.as_ref().and_then(|c| c.lane.as_ref())) {
-            (Some(_), Some(lane)) => start + lane.length(),
+        // A finished page's timeline also covers longer compared recordings.
+        let compared = match (page.closed_at, &self.compare) {
+            (Some(_), Some(c)) => start + c.lanes.iter().map(CompareLane::length).fold(0.0, f64::max),
             _ => start,
         };
         (start, end.max(last_frame).max(compared).max(start + 1.0))

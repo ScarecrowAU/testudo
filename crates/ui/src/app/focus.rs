@@ -3,7 +3,7 @@
 //! (Steps / Network / Console / Output) synced to the scrub time.
 
 use super::*;
-use crate::logic::{status_label, url_path};
+use crate::logic::{best_grid, status_label, url_path};
 use std::sync::Arc;
 use testudo_protocol::TestStatus;
 use crate::state::{ConsoleFilter, FocusTab, NetFilter};
@@ -114,27 +114,32 @@ impl TestudoApp {
         };
         let compare_target = test.and_then(|t| t.file.clone().map(|f| (f, t.title_path.clone())));
         let now = now_ms();
-        // The compared earlier run: (shown cell, position, how many there are).
-        let compared: Option<(Option<ComparedCell>, usize, usize)> = focus.compare.as_ref().map(|c| {
-            let cell = c.lane.as_ref().map(|l| {
-                let status = l.prior.status.as_deref().map(|s| match s {
-                    "passed" => TestStatus::Passed,
-                    "failed" => TestStatus::Failed,
-                    "timedOut" => TestStatus::TimedOut,
-                    "skipped" => TestStatus::Skipped,
-                    "interrupted" => TestStatus::Interrupted,
-                    _ => TestStatus::Unknown,
-                });
-                let dur = l.prior.duration_ms.map(|d| format!(" · {}", fmt_dur(d))).unwrap_or_default();
-                let fallback = if l.by_time_fallback { " · steps differ, by time" } else { "" };
-                let label = format!(
-                    "{} ({}){dur}{fallback}",
-                    fmt_time(l.prior.run_started_at),
-                    fmt_ago(l.prior.run_started_at, now)
-                );
-                (label, status, l.image.clone())
-            });
-            (cell, c.index, c.candidates.len())
+        // The compared earlier runs: (shown cells, first position, how many
+        // are shown, how many exist).
+        let compared: Option<(Vec<ComparedCell>, usize, usize, usize)> = focus.compare.as_ref().map(|c| {
+            let cells = c
+                .lanes
+                .iter()
+                .map(|l| {
+                    let status = l.prior.status.as_deref().map(|s| match s {
+                        "passed" => TestStatus::Passed,
+                        "failed" => TestStatus::Failed,
+                        "timedOut" => TestStatus::TimedOut,
+                        "skipped" => TestStatus::Skipped,
+                        "interrupted" => TestStatus::Interrupted,
+                        _ => TestStatus::Unknown,
+                    });
+                    let dur = l.prior.duration_ms.map(|d| format!(" · {}", fmt_dur(d))).unwrap_or_default();
+                    let fallback = if l.by_time_fallback { " · steps differ, by time" } else { "" };
+                    let label = format!(
+                        "{} ({}){dur}{fallback}",
+                        fmt_time(l.prior.run_started_at),
+                        fmt_ago(l.prior.run_started_at, now)
+                    );
+                    (label, status, l.image.clone())
+                })
+                .collect();
+            (cells, c.index, c.count, c.candidates.len())
         });
         let title = pane_name(model, page).to_owned();
         let browser = page.browser.clone().unwrap_or_default();
@@ -564,99 +569,132 @@ impl TestudoApp {
 
         let frame: AnyElement = match compared {
             None => frame.into_any_element(),
-            Some((_, _, 0)) => v_flex()
+            Some((_, _, _, 0)) => v_flex()
                 .flex_1()
                 .min_h_0()
                 .gap_1()
                 .child(div().text_xs().text_color(muted).child("No earlier recordings of this test (retention may have removed them)"))
                 .child(frame)
                 .into_any_element(),
-            Some((cell, index, total)) => {
-                let header = |content: Div| content.h(px(26.)).gap_2().items_center();
-                let this_run = v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .min_h_0()
-                    .gap_1()
-                    .child(header(h_flex())
-                        .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child("This run"))
-                        .child(pill(status_label(status), status_color)))
-                    .child(frame);
-                let (label, st, image) = cell.unwrap_or_default();
-                // The recordings' shape (the earlier run's frame; 16:9 until one loads).
-                let frame_shape = image
-                    .as_ref()
+            Some((cells, index, count, total)) => {
+                let cell_header = |content: Div| content.h(px(22.)).gap_2().items_center();
+                let pane = |image: Option<Arc<RenderImage>>| {
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .rounded_md()
+                        .overflow_hidden()
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(theme.secondary.opacity(0.4))
+                        .relative()
+                        .children(image.map(frame_img))
+                };
+                // The recordings' shape (an earlier run's frame; 16:9 until one loads).
+                let frame_shape = cells
+                    .iter()
+                    .find_map(|c| c.2.as_ref())
                     .map(|i| i.size(0))
                     .map_or((16.0, 9.0), |s| (u32::from(s.width) as f32, u32::from(s.height) as f32));
-                let (_, stn) = status_icon(st);
-                // Left goes back in time (older runs), right forward.
-                let to_older = cx.listener(move |this, _, _, cx| this.step_compare(w, 1, cx));
-                let to_newer = cx.listener(move |this, _, _, cx| this.step_compare(w, -1, cx));
-                let older = index + 1 < total;
-                let newer = index > 0;
-                let earlier = v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .min_h_0()
-                    .gap_1()
-                    .child(
-                        header(h_flex())
-                            .child(
-                                button("cmp-older")
-                                    .icon(media_icon("chevron-left"))
-                                    .xsmall()
-                                    .ghost()
-                                    .disabled(!older)
-                                    .when(!older, |b| b.cursor_default())
-                                    .tooltip("Older run")
-                                    .on_click(to_older),
-                            )
-                            .child(div().flex_none().text_xs().text_color(muted).child(format!("{} of {total}", index + 1)))
-                            .child(
-                                button("cmp-newer")
-                                    .icon(media_icon("chevron-right"))
-                                    .xsmall()
-                                    .ghost()
-                                    .disabled(!newer)
-                                    .when(!newer, |b| b.cursor_default())
-                                    .tooltip("Newer run")
-                                    .on_click(to_newer),
-                            )
-                            .child(div().min_w_0().truncate().text_xs().text_color(muted).child(label))
-                            .child(pill(status_label(st), tone(stn, cx))),
-                    )
-                    .child(
-                        div()
+                let mut items: Vec<AnyElement> = vec![
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .min_h_0()
+                        .gap_1()
+                        .child(
+                            cell_header(h_flex())
+                                .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child("This run"))
+                                .child(pill(status_label(status), status_color)),
+                        )
+                        .child(frame)
+                        .into_any_element(),
+                ];
+                for (label, st, image) in cells {
+                    let (_, stn) = status_icon(st);
+                    items.push(
+                        v_flex()
                             .flex_1()
+                            .min_w_0()
                             .min_h_0()
-                            .rounded_md()
-                            .overflow_hidden()
-                            .border_1()
-                            .border_color(theme.border)
-                            .bg(theme.secondary.opacity(0.4))
-                            .relative()
-                            .children(image.map(frame_img)),
+                            .gap_1()
+                            .child(
+                                cell_header(h_flex())
+                                    .child(div().min_w_0().truncate().text_xs().text_color(muted).child(label))
+                                    .child(pill(status_label(st), tone(stn, cx))),
+                            )
+                            .child(pane(image))
+                            .into_any_element(),
                     );
-                // Side by side or stacked, whichever shows the frames larger
-                // for this page's shape. The area is measured at layout; if
-                // the best arrangement changed, lay out again.
-                const CELL_HEADER: f32 = 30.;
+                }
+
+                // Toolbar: ‹ › move through the history, − + change how many
+                // earlier runs are shown.
+                let shown_to = (index + count).min(total);
+                let older = shown_to < total;
+                let newer = index > 0;
+                let position = if count == 1 || shown_to == index + 1 {
+                    format!("{} of {total}", index + 1)
+                } else {
+                    format!("{}–{shown_to} of {total}", index + 1)
+                };
+                let small = |id: &'static str, icon: &'static str, enabled: bool, tip: &'static str| {
+                    button(id)
+                        .icon(media_icon(icon))
+                        .xsmall()
+                        .ghost()
+                        .disabled(!enabled)
+                        .when(!enabled, |b| b.cursor_default())
+                        .tooltip(tip)
+                };
+                let toolbar = h_flex()
+                    .h(px(24.))
+                    .gap_1()
+                    .items_center()
+                    .child(div().text_xs().text_color(muted).child("Earlier runs"))
+                    .child(
+                        small("cmp-older", "chevron-left", older, "Older runs")
+                            .on_click(cx.listener(move |this, _, _, cx| this.step_compare(w, 1, cx))),
+                    )
+                    .child(div().text_xs().text_color(muted).child(position))
+                    .child(
+                        small("cmp-newer", "chevron-right", newer, "Newer runs")
+                            .on_click(cx.listener(move |this, _, _, cx| this.step_compare(w, -1, cx))),
+                    )
+                    .child(div().w(px(10.)))
+                    .child(
+                        small("cmp-fewer", "minus", count > 1, "Show fewer earlier runs")
+                            .on_click(cx.listener(move |this, _, _, cx| this.resize_compare(w, -1, cx))),
+                    )
+                    .child(div().text_xs().text_color(muted).child(format!("{count} shown")))
+                    .child(
+                        small(
+                            "cmp-more",
+                            "plus",
+                            count < crate::state::MAX_COMPARED && count < total,
+                            "Show more earlier runs",
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| this.resize_compare(w, 1, cx))),
+                    );
+
+                // Grid: whichever arrangement shows the recordings largest for
+                // this page's shape. The area is measured at layout; if the
+                // best grid changed, lay out again.
+                const CELL_HEADER: f32 = 26.;
                 const CELL_GAP: f32 = 8.;
+                let n = items.len();
                 let area_cell = self.compare_area.clone();
                 let (area, _) = area_cell.get();
-                let stacked = crate::logic::stack_vertically(
-                    (f32::from(area.size.width), f32::from(area.size.height)),
-                    frame_shape,
-                    CELL_HEADER,
-                    CELL_GAP,
-                );
-                area_cell.set((area, stacked));
+                let grid =
+                    best_grid((f32::from(area.size.width), f32::from(area.size.height)), frame_shape, n, CELL_HEADER, CELL_GAP);
+                area_cell.set((area, grid));
                 let measure = canvas(
                     move |bounds, window, _| {
                         let (_, laid_out) = area_cell.get();
-                        let best = crate::logic::stack_vertically(
+                        let best = best_grid(
                             (f32::from(bounds.size.width), f32::from(bounds.size.height)),
                             frame_shape,
+                            n,
                             CELL_HEADER,
                             CELL_GAP,
                         );
@@ -669,17 +707,27 @@ impl TestudoApp {
                 )
                 .absolute()
                 .inset_0();
-                // Stretch: cells get their size from the container, not their
-                // content (frames are pinned to their cell, adding no size).
-                let pair = if stacked { v_flex() } else { h_flex() };
-                pair.items_stretch()
-                    .relative()
+                let (cols, _) = grid;
+                let mut rows = Vec::new();
+                let mut it = items.into_iter().peekable();
+                while it.peek().is_some() {
+                    // Stretch: cells get their size from the row, not their
+                    // content (frames are pinned to their cell, adding no size).
+                    let mut row = h_flex().items_stretch().flex_1().min_h_0().gap_2();
+                    for _ in 0..cols {
+                        row = match it.next() {
+                            Some(cell) => row.child(cell),
+                            None => row.child(div().flex_1()),
+                        };
+                    }
+                    rows.push(row);
+                }
+                v_flex()
                     .flex_1()
                     .min_h_0()
-                    .gap_2()
-                    .child(measure)
-                    .child(this_run)
-                    .child(earlier)
+                    .gap_1()
+                    .child(toolbar)
+                    .child(v_flex().relative().flex_1().min_h_0().gap_2().child(measure).children(rows))
                     .into_any_element()
             }
         };
@@ -1028,6 +1076,17 @@ impl TestudoApp {
             .track_scroll(&self.console_scroll)
             .flex_1(),
         )
+    }
+
+    /// Show one more (`delta` > 0) or one fewer earlier run.
+    fn resize_compare(&mut self, w: Which, delta: isize, cx: &mut Context<Self>) {
+        let store = self.store.clone();
+        let mut retired = Vec::new();
+        if let (Some(store), Some(f)) = (store, self.view_mut(w).and_then(|v| v.focus.as_mut())) {
+            retired = f.resize_compare(delta, &store);
+        }
+        self.retired.extend(retired);
+        cx.notify();
     }
 
     /// Compare with an older (`delta` > 0) or newer earlier run.

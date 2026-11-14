@@ -125,9 +125,9 @@ pub struct TestudoApp {
     started_at: Instant,
     focus_handle: FocusHandle,
     focus_scrub: Rc<Cell<Bounds<Pixels>>>,
-    /// Size of the comparison area at the last layout, and whether it was
-    /// laid out stacked: decides side by side vs stacked (see focus.rs).
-    compare_area: Rc<Cell<(Bounds<Pixels>, bool)>>,
+    /// Size of the comparison area at the last layout, and the grid
+    /// (columns, rows) it was laid out with (see focus.rs).
+    compare_area: Rc<Cell<CompareArea>>,
     timeline_scrub: Rc<Cell<Bounds<Pixels>>>,
     /// Test span under the mouse on the replay timeline.
     timeline_hover: Option<usize>,
@@ -225,7 +225,7 @@ impl TestudoApp {
             started_at: Instant::now(),
             focus_handle: cx.focus_handle(),
             focus_scrub: Rc::new(Cell::new(Bounds::default())),
-            compare_area: Rc::new(Cell::new((Bounds::default(), false))),
+            compare_area: Rc::new(Cell::new((Bounds::default(), (2, 1)))),
             timeline_scrub: Rc::new(Cell::new(Bounds::default())),
             timeline_hover: None,
             net_scroll: UniformListScrollHandle::new(),
@@ -283,6 +283,13 @@ impl TestudoApp {
                 {
                     f.open_compare(&test.0, &test.1, &store);
                     f.compare_by_step = std::env::var("TESTUDO_DEBUG_COMPARE").as_deref() != Ok("time");
+                    let more: isize = std::env::var("TESTUDO_DEBUG_COMPARE_COUNT").ok().and_then(|n| n.parse::<isize>().ok()).map_or(0, |n| n - 1);
+                    if more > 0 {
+                        for _ in 0..more {
+                            let old = f.resize_compare(1, &store);
+                            app.retired.extend(old);
+                        }
+                    }
                     let back: isize = std::env::var("TESTUDO_DEBUG_COMPARE_STEP").ok().and_then(|n| n.parse().ok()).unwrap_or(0);
                     if back != 0 {
                         let old = f.step_compare(back, &store);
@@ -704,7 +711,7 @@ impl TestudoApp {
             compare_lanes: view
                 .and_then(|v| v.focus.as_ref())
                 .and_then(|f| f.compare.as_ref())
-                .map_or(0, |c| usize::from(c.lane.is_some())),
+                .map_or(0, |c| c.lanes.len()),
         }
     }
 
@@ -909,6 +916,10 @@ fn app_icon() -> Arc<Image> {
 fn button(id: impl Into<ElementId>) -> Button {
     Button::new(id).cursor_pointer()
 }
+
+/// The comparison area's bounds at the last layout and the grid (columns,
+/// rows) it was laid out with.
+type CompareArea = (Bounds<Pixels>, (usize, usize));
 
 /// Height of a page tile's title/URL bar; the frame fits above it.
 const TILE_LABEL_H: f32 = 46.;

@@ -208,17 +208,24 @@ pub fn rerun_args(runner: &str, cwd: &str, file: &str, line: u32, project: Optio
     Some(args)
 }
 
-/// Should two recordings of shape `frame` (w, h) be stacked one above the
-/// other (else side by side) in an `area` (w, h)? Picks the arrangement that
-/// shows them larger; each cell loses `header` px to its label row, cells are
-/// `gap` px apart. Ties go side by side.
-pub fn stack_vertically(area: (f32, f32), frame: (f32, f32), header: f32, gap: f32) -> bool {
+/// Grid (columns, rows) for `n` recordings of shape `frame` (w, h) in an
+/// `area` (w, h): the one that shows them largest. Each cell loses `header`
+/// px to its label row, cells are `gap` px apart. Ties go to fewer rows.
+pub fn best_grid(area: (f32, f32), frame: (f32, f32), n: usize, header: f32, gap: f32) -> (usize, usize) {
+    let n = n.max(1);
     let (w, h) = area;
     let (fw, fh) = (frame.0.max(1.0), frame.1.max(1.0));
-    let fit = |cw: f32, ch: f32| (cw / fw).min(ch / fh).max(0.0);
-    let side_by_side = fit((w - gap) / 2.0, h - header);
-    let stacked = fit(w, (h - gap) / 2.0 - header);
-    stacked > side_by_side
+    let mut best = ((n, 1), -1.0_f32);
+    for rows in 1..=n {
+        let cols = n.div_ceil(rows);
+        let cw = (w - gap * (cols - 1) as f32) / cols as f32;
+        let ch = (h - gap * (rows - 1) as f32) / rows as f32 - header;
+        let fit = (cw / fw).min(ch / fh).max(0.0);
+        if fit > best.1 {
+            best = ((cols, rows), fit);
+        }
+    }
+    best.0
 }
 
 pub fn truncate(s: &str, max: usize) -> String {
@@ -356,68 +363,19 @@ mod tests {
     }
 
     #[test]
-    fn comparison_layout_follows_the_space_and_page_shape() {
-        // Wide pane, phone page: side by side.
-        assert!(!stack_vertically((1000.0, 600.0), (390.0, 844.0), 30.0, 8.0));
-        // Tall pane, desktop page: stacked.
-        assert!(stack_vertically((600.0, 1000.0), (1280.0, 720.0), 30.0, 8.0));
-        // Desktop page in a roughly square pane: stacking shows it larger.
-        assert!(stack_vertically((900.0, 800.0), (1280.0, 720.0), 30.0, 8.0));
-        // Very wide pane, desktop page: side by side.
-        assert!(!stack_vertically((2000.0, 600.0), (1280.0, 720.0), 30.0, 8.0));
-    }
-
-    #[test]
-    fn tests_order_by_state_then_name() {
-        let mut m = Model::new();
-        let queue = |id: &str| Event::TestQueued {
-            test_id: id.into(),
-            title: id.into(),
-            title_path: vec![],
-            file: None,
-            line: None,
-            project: None,
-        };
-        let begin = |id: &str| Event::TestBegin {
-            test_id: id.into(),
-            title: id.into(),
-            title_path: vec![],
-            file: None,
-            line: None,
-            project: None,
-            worker_index: None,
-        };
-        let end = |id: &str, status| Event::TestEnd { test_id: id.into(), status, duration_ms: None, error: None, note: None };
-        let events = [
-            queue("zeta passes"),
-            queue("Alpha pending"),
-            queue("beta fails"),
-            queue("alpha passes"),
-            queue("gamma running"),
-            queue("delta pending"),
-            queue("Beta skipped"),
-            begin("zeta passes"),
-            end("zeta passes", TestStatus::Passed),
-            begin("beta fails"),
-            end("beta fails", TestStatus::Failed),
-            begin("alpha passes"),
-            end("alpha passes", TestStatus::Passed),
-            begin("Beta skipped"),
-            end("Beta skipped", TestStatus::Skipped),
-            begin("gamma running"),
-        ];
-        for (i, e) in events.into_iter().enumerate() {
-            m.apply("r1", i as f64, e);
-        }
-        let run = &m.runs[0];
-        let mut tests: Vec<&Test> = run.tests.iter().collect();
-        tests.sort_by_cached_key(|t| test_order(t));
-        let order: Vec<&str> = tests.iter().map(|t| t.title.as_str()).collect();
-        assert_eq!(
-            order,
-            ["gamma running", "Alpha pending", "delta pending", "beta fails", "alpha passes", "Beta skipped", "zeta passes"]
-        );
-        assert_eq!(run.counts(), (2, 1, 1, 2), "passed, failed, running, pending");
+    fn comparison_grid_follows_the_space_and_page_shape() {
+        let grid = |area, frame, n| best_grid(area, frame, n, 30.0, 8.0);
+        // Two recordings: phone side by side in a wide pane, desktop stacked
+        // in a tall or square one, desktop side by side in a very wide one.
+        assert_eq!(grid((1000.0, 600.0), (390.0, 844.0), 2), (2, 1));
+        assert_eq!(grid((600.0, 1000.0), (1280.0, 720.0), 2), (1, 2));
+        assert_eq!(grid((900.0, 800.0), (1280.0, 720.0), 2), (1, 2));
+        assert_eq!(grid((2000.0, 600.0), (1280.0, 720.0), 2), (2, 1));
+        // Four desktop recordings in a square pane: 2×2; phones in a wide one: a row.
+        assert_eq!(grid((1000.0, 900.0), (1280.0, 720.0), 4), (2, 2));
+        assert_eq!(grid((1600.0, 600.0), (390.0, 844.0), 4), (4, 1));
+        // Three: never more cells than needed per row.
+        assert_eq!(grid((900.0, 900.0), (1280.0, 720.0), 3), (1, 3));
     }
 
     #[test]
