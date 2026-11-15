@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 use gpui_kit::component::WindowExt;
 use gpui_kit::component::button::ButtonVariant;
+use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings as SettingsView};
 use testudo_core::settings::{DEFAULT_FRAME_RATE, FRAME_RATES};
 
 use super::update::UpdateState;
@@ -153,11 +154,136 @@ impl SettingsPanel {
 
 impl Render for SettingsPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        let muted = theme.muted_foreground;
-        let Some(app) = self.app.upgrade() else { return v_flex() };
-        let app = app.read(cx);
-        let settings = app.settings.clone();
+        let panel = cx.entity().downgrade();
+        let pages = vec![
+            SettingPage::new("Recording")
+                .icon(media_icon("video"))
+                .description("Applies to runs started from now on.")
+                .group(recording_group(&panel)),
+            SettingPage::new("Storage")
+                .icon(media_icon("hard-drive"))
+                .description(self.usage_label())
+                .group(self.storage_group(&panel, cx)),
+            SettingPage::new("Updates")
+                .icon(media_icon("refresh-cw"))
+                .group(self.updates_group(&panel, cx)),
+        ];
+        v_flex()
+            .h(px(460.))
+            .gap_2()
+            .child(
+                div().flex_1().min_h_0().child(
+                    SettingsView::new("testudo-settings")
+                        .sidebar_width(px(180.))
+                        .pages(pages),
+                ),
+            )
+            .children(
+                self.status
+                    .clone()
+                    .map(|s| div().px_2().text_sm().text_color(cx.theme().green).child(s)),
+            )
+    }
+}
+
+/// The app's current settings, read through the panel (from a field's value
+/// closure, which only gets the `App`).
+fn app_settings(panel: &WeakEntity<SettingsPanel>, cx: &App) -> Option<Settings> {
+    let app = panel.upgrade()?.read(cx).app.upgrade()?;
+    Some(app.read(cx).settings.clone())
+}
+
+/// A dropdown setting over `choices`, keyed by position. Changing an update
+/// setting checks for updates again.
+fn choice<T: Copy + PartialEq + 'static>(
+    panel: &WeakEntity<SettingsPanel>,
+    choices: Vec<(T, String)>,
+    current: impl Fn(&Settings) -> T + 'static,
+    set: impl Fn(&mut Settings, T) + Copy + 'static,
+    updates: bool,
+) -> SettingField<SharedString> {
+    let options = choices
+        .iter()
+        .enumerate()
+        .map(|(i, (_, label))| (SharedString::from(i.to_string()), SharedString::from(label.clone())))
+        .collect();
+    let keys: Rc<Vec<T>> = Rc::new(choices.into_iter().map(|(v, _)| v).collect());
+    let (read_panel, read_keys, panel) = (panel.clone(), keys.clone(), panel.clone());
+    SettingField::dropdown(
+        options,
+        move |cx: &App| {
+            app_settings(&read_panel, cx)
+                .and_then(|s| read_keys.iter().position(|k| *k == current(&s)))
+                .unwrap_or(0)
+                .to_string()
+                .into()
+        },
+        move |key: SharedString, cx: &mut App| {
+            let Some(v) = key.parse::<usize>().ok().and_then(|i| keys.get(i).copied()) else {
+                return;
+            };
+            let _ = panel.update(cx, |p, cx| {
+                if updates {
+                    p.update_updates(cx, |s| set(s, v));
+                } else {
+                    p.update_settings(cx, |s| set(s, v));
+                }
+            });
+        },
+    )
+}
+
+fn hint(text: impl Into<SharedString>, color: Hsla) -> Div {
+    div().text_xs().text_color(color).child(text.into())
+}
+
+fn recording_group(panel: &WeakEntity<SettingsPanel>) -> SettingGroup {
+    let sizes = FRAME_SIZES
+        .iter()
+        .map(|&px| {
+            let label = if px == DEFAULT_FRAME_MAX {
+                format!("{px} × {px} px (default)")
+            } else {
+                format!("{px} × {px} px")
+            };
+            (px, label)
+        })
+        .collect();
+    let rates = FRAME_RATES.iter().map(|&fps| (fps, rate_label(fps))).collect();
+    SettingGroup::new()
+        .item(
+            SettingItem::new(
+                "Resolution",
+                choice(panel, sizes, Settings::frame_max, |s, px| s.frame_max_px = px, false),
+            )
+            .description("Frames fit within this box, keeping the page's shape."),
+        )
+        .item(
+            SettingItem::new(
+                "Frame rate",
+                choice(panel, rates, Settings::frame_rate, |s, fps| s.frame_rate = fps, false),
+            )
+            .description("Lower rates save space; a page's last frame is always kept."),
+        )
+}
+
+impl SettingsPanel {
+    fn usage_label(&self) -> String {
+        match self.usage {
+            None => "Measuring…".to_owned(),
+            Some((runs, bytes)) => format!(
+                "Using {runs} run{} · {}",
+                if runs == 1 { "" } else { "s" },
+                fmt_bytes(bytes)
+            ),
+        }
+    }
+
+    fn storage_group(&self, panel: &WeakEntity<Self>, cx: &App) -> SettingGroup {
+        let Some(app) = self.app.upgrade() else {
+            return SettingGroup::new();
+        };
+        let settings = app.read(cx).settings.clone();
         let current_dir = self.store.as_ref().map(|s| s.dir().to_path_buf());
         let chosen_dir = settings.recordings_dir.clone().unwrap_or_else(fallback_data_dir);
         let env_override = std::env::var_os("TESTUDO_DATA_DIR").is_some();
@@ -168,137 +294,17 @@ impl Render for SettingsPanel {
             chosen_dir.clone()
         };
         let pending_move = !env_override && current_dir.as_ref().is_some_and(|d| *d != chosen_dir);
-
-        let this = cx.entity().downgrade();
-        let resolution = choice_menu(
-            "set-resolution",
-            format!("{0} × {0} px", settings.frame_max()),
-            FRAME_SIZES.iter().map(|&px| {
-                let label = if px == DEFAULT_FRAME_MAX {
-                    format!("{px} × {px} px (default)")
-                } else {
-                    format!("{px} × {px} px")
-                };
-                (label, px == settings.frame_max(), px)
-            }),
-            {
-                let this = this.clone();
-                move |px, cx| {
-                    let _ = this.update(cx, |p, cx| p.update_settings(cx, |s| s.frame_max_px = px));
-                }
-            },
-        );
-        let rate = choice_menu(
-            "set-frame-rate",
-            rate_label(settings.frame_rate()),
-            FRAME_RATES
-                .iter()
-                .map(|&fps| (rate_label(fps), fps == settings.frame_rate(), fps)),
-            {
-                let this = this.clone();
-                move |fps, cx| {
-                    let _ = this.update(cx, |p, cx| p.update_settings(cx, |s| s.frame_rate = fps));
-                }
-            },
-        );
-        let age = choice_menu(
-            "older-than",
-            days_label(self.older_than_days),
-            AGE_CHOICES
-                .iter()
-                .map(|&d| (days_label(d), d == self.older_than_days, d)),
-            {
-                let this = this.clone();
-                move |d, cx| {
-                    let _ = this.update(cx, |p, cx| {
-                        p.older_than_days = d;
-                        cx.notify();
-                    });
-                }
-            },
-        );
-
-        let section = |title: &'static str| {
-            div()
-                .pt_2()
-                .text_xs()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(muted)
-                .child(title)
-        };
-        let row = |label: &'static str, hint: Option<&'static str>, control: AnyElement| {
-            h_flex()
-                .gap_4()
-                .items_center()
-                .justify_between()
-                .child(
-                    v_flex()
-                        .min_w_0()
-                        .child(div().text_sm().child(label))
-                        .children(hint.map(|h| div().text_xs().text_color(muted).child(h))),
-                )
-                .child(div().flex_none().child(control))
-        };
-        let usage = self.usage.map_or("measuring…".to_owned(), |(runs, bytes)| {
-            format!("{runs} run{} · {}", if runs == 1 { "" } else { "s" }, fmt_bytes(bytes))
-        });
+        let custom = settings.recordings_dir.is_some();
         let days = self.older_than_days;
 
-        let channel = choice_menu(
-            "set-channel",
-            channel_label(settings.update_channel).to_owned(),
-            UpdateChannel::ALL
-                .iter()
-                .map(|&c| (channel_label(c).to_owned(), c == settings.update_channel, c)),
-            {
-                let this = this.clone();
-                move |c, cx| {
-                    let _ = this.update(cx, |p, cx| p.update_updates(cx, |s| s.update_channel = c));
-                }
-            },
-        );
-        let channel_hint = match settings.update_channel {
-            UpdateChannel::Stable => "Signed releases from GitHub.",
-            UpdateChannel::BleedingEdge => {
-                "Every commit on main, built on this machine. Needs git and a Rust toolchain."
-            }
-        };
-        let (update_status, update_color) = match &app.updates.state {
-            UpdateState::Idle => (String::new(), muted),
-            UpdateState::Checking => ("Checking…".to_owned(), muted),
-            UpdateState::UpToDate => ("Up to date.".to_owned(), theme.green),
-            UpdateState::CheckFailed(e) => (e.clone(), theme.yellow),
-            UpdateState::Available(u) => (format!("{} is available.", u.label), theme.yellow),
-            UpdateState::Installing { label, .. } => (format!("Updating to {label}…"), muted),
-            UpdateState::Installed(label) => (format!("Updated to {label}. Restart to use it."), theme.green),
-            UpdateState::InstallFailed(e) => (format!("Update failed: {e}"), theme.red),
-        };
-        let not_updatable = app.updates.install.as_ref().err().map(|e| e.to_string());
-        let check_updates = settings.check_updates;
-
-        v_flex()
-            .gap_3()
-            .child(section("RECORDING"))
-            .child(row(
-                "Resolution",
-                Some("Frames fit within this box, keeping the page's shape."),
-                resolution.into_any_element(),
-            ))
-            .child(row(
-                "Frame rate",
-                Some("Lower rates save space; a page's last frame is always kept."),
-                rate.into_any_element(),
-            ))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(muted)
-                    .child("Applies to runs started from now on."),
-            )
-            .child(div().h(px(1.)).bg(theme.border))
-            .child(section("STORAGE"))
-            .child(
+        let location = {
+            let panel = panel.clone();
+            SettingItem::render(move |_, _, cx| {
+                let theme = cx.theme();
+                let (muted, warn) = (theme.muted_foreground, theme.yellow);
+                let (change, reset) = (panel.clone(), panel.clone());
                 v_flex()
+                    .w_full()
                     .gap_1()
                     .child(
                         h_flex()
@@ -317,110 +323,152 @@ impl Render for SettingsPanel {
                                     .child(tilde(&shown_dir))
                                     .tooltip(tooltip_text(shown_dir.display().to_string())),
                             )
-                            .child(
-                                button("rec-dir-change")
-                                    .label("Change…")
-                                    .small()
-                                    .outline()
-                                    .on_click(cx.listener(|p, _, _, cx| p.pick_location(cx))),
-                            )
-                            .when(settings.recordings_dir.is_some(), |r| {
+                            .child(button("rec-dir-change").label("Change…").small().outline().on_click(
+                                move |_, _, cx| {
+                                    let _ = change.update(cx, |p, cx| p.pick_location(cx));
+                                },
+                            ))
+                            .when(custom, |r| {
                                 r.child(button("rec-dir-default").label("Default").small().ghost().on_click(
-                                    cx.listener(|p, _, _, cx| p.update_settings(cx, |s| s.recordings_dir = None)),
+                                    move |_, _, cx| {
+                                        let _ = reset
+                                            .update(cx, |p, cx| p.update_settings(cx, |s| s.recordings_dir = None));
+                                    },
                                 ))
                             }),
                     )
                     .when(env_override, |d| {
-                        d.child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.yellow)
-                                .child("TESTUDO_DATA_DIR is set and overrides this."),
-                        )
+                        d.child(hint("TESTUDO_DATA_DIR is set and overrides this.", warn))
                     })
                     .when(pending_move, |d| {
-                        d.child(div().text_xs().text_color(theme.yellow).child(
+                        d.child(hint(
                             "Takes effect the next time Testudo starts. Existing recordings stay where they are.",
+                            warn,
                         ))
                     })
-                    .child(div().text_xs().text_color(muted).child(format!("Using {usage}"))),
-            )
-            .child(row(
-                "Delete recordings older than",
-                None,
-                h_flex()
-                    .gap_2()
-                    .child(age)
-                    .child(
-                        button("delete-older")
-                            .label("Delete")
-                            .small()
-                            .outline()
-                            .on_click(cx.listener(move |p, _, window, cx| {
-                                p.confirm_delete(Some(now_ms() - days as f64 * DAY_MS), window, cx)
-                            })),
-                    )
-                    .into_any_element(),
-            ))
-            .child(row(
-                "Delete all recordings",
-                Some("Runs in progress are kept."),
+            })
+        };
+
+        let older =
+            {
+                let panel = panel.clone();
+                SettingField::render(move |_, _, _| {
+                    let (pick, delete) = (panel.clone(), panel.clone());
+                    h_flex()
+                        .gap_2()
+                        .child(choice_menu(
+                            "older-than",
+                            days_label(days),
+                            AGE_CHOICES.iter().map(|&d| (days_label(d), d == days, d)),
+                            move |d, cx| {
+                                let _ = pick.update(cx, |p, cx| {
+                                    p.older_than_days = d;
+                                    cx.notify();
+                                });
+                            },
+                        ))
+                        .child(button("delete-older").label("Delete").small().outline().on_click(
+                            move |_, window, cx| {
+                                let before = now_ms() - days as f64 * DAY_MS;
+                                let _ = delete.update(cx, |p, cx| p.confirm_delete(Some(before), window, cx));
+                            },
+                        ))
+                })
+            };
+
+        let delete_all = {
+            let panel = panel.clone();
+            SettingField::render(move |_, _, _| {
+                let panel = panel.clone();
                 button("delete-all")
                     .label("Delete all")
                     .small()
                     .danger()
-                    .on_click(cx.listener(|p, _, window, cx| p.confirm_delete(None, window, cx)))
-                    .into_any_element(),
-            ))
-            .child(div().h(px(1.)).bg(theme.border))
-            .child(section("UPDATES"))
-            .child(row(
-                "Check for updates",
-                Some("At startup and once a day."),
-                Checkbox::new("check-updates")
-                    .checked(check_updates)
-                    .on_click(cx.listener(|p, checked: &bool, _, cx| {
-                        let on = *checked;
-                        p.update_updates(cx, |s| s.check_updates = on)
-                    }))
-                    .into_any_element(),
-            ))
-            .child(row("Channel", Some(channel_hint), channel.into_any_element()))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(muted)
-                            .flex_none()
-                            .child(format!("Testudo {}", testudo_update::current())),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_xs()
-                            .text_color(update_color)
-                            .child(update_status),
-                    )
-                    .child(
-                        button("check-now")
-                            .label("Check now")
-                            .small()
-                            .outline()
-                            .on_click(cx.listener(|p, _, _, cx| {
-                                let _ = p.app.update(cx, |app, cx| app.check_for_updates(cx));
-                            })),
-                    ),
+                    .on_click(move |_, window, cx| {
+                        let _ = panel.update(cx, |p, cx| p.confirm_delete(None, window, cx));
+                    })
+            })
+        };
+
+        SettingGroup::new()
+            .item(location)
+            .item(SettingItem::new("Delete recordings older than", older))
+            .item(SettingItem::new("Delete all recordings", delete_all).description("Runs in progress are kept."))
+    }
+
+    fn updates_group(&self, panel: &WeakEntity<Self>, cx: &App) -> SettingGroup {
+        let Some(app) = self.app.upgrade() else {
+            return SettingGroup::new();
+        };
+        let app = app.read(cx);
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let channel_hint = match app.settings.update_channel {
+            UpdateChannel::Stable => "Signed releases from GitHub.",
+            UpdateChannel::BleedingEdge => {
+                "Every commit on main, built on this machine. Needs git and a Rust toolchain."
+            }
+        };
+        let (update_status, update_color) = match &app.updates.state {
+            UpdateState::Idle => (String::new(), muted),
+            UpdateState::Checking => ("Checking…".to_owned(), muted),
+            UpdateState::UpToDate => ("Up to date.".to_owned(), theme.green),
+            UpdateState::CheckFailed(e) => (e.clone(), theme.yellow),
+            UpdateState::Available(u) => (format!("{} is available.", u.label), theme.yellow),
+            UpdateState::Installing { label, .. } => (format!("Updating to {label}…"), muted),
+            UpdateState::Installed(label) => (format!("Updated to {label}. Restart to use it."), theme.green),
+            UpdateState::InstallFailed(e) => (format!("Update failed: {e}"), theme.red),
+        };
+        let not_updatable = app.updates.install.as_ref().err().map(|e| e.to_string());
+
+        let check = {
+            let (read_panel, panel) = (panel.clone(), panel.clone());
+            SettingField::switch(
+                move |cx: &App| app_settings(&read_panel, cx).is_some_and(|s| s.check_updates),
+                move |on: bool, cx: &mut App| {
+                    let _ = panel.update(cx, |p, cx| p.update_updates(cx, |s| s.check_updates = on));
+                },
             )
-            .children(not_updatable.map(|why| div().text_xs().text_color(muted).child(why)))
-            .children(
-                self.status
-                    .clone()
-                    .map(|s| div().text_sm().text_color(theme.green).child(s)),
+        };
+        let channels = UpdateChannel::ALL
+            .iter()
+            .map(|&c| (c, channel_label(c).to_owned()))
+            .collect();
+        let status = {
+            let panel = panel.clone();
+            SettingItem::render(move |_, _, _| {
+                let panel = panel.clone();
+                v_flex()
+                    .w_full()
+                    .gap_1()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(hint(format!("Testudo {}", testudo_update::current()), muted).flex_none())
+                            .child(hint(update_status.clone(), update_color).flex_1().min_w_0())
+                            .child(button("check-now").label("Check now").small().outline().on_click(
+                                move |_, _, cx| {
+                                    let _ = panel.update(cx, |p, cx| {
+                                        let _ = p.app.update(cx, |app, cx| app.check_for_updates(cx));
+                                    });
+                                },
+                            )),
+                    )
+                    .children(not_updatable.clone().map(|why| hint(why, muted)))
+            })
+        };
+
+        SettingGroup::new()
+            .item(SettingItem::new("Check for updates", check).description("At startup and once a day."))
+            .item(
+                SettingItem::new(
+                    "Channel",
+                    choice(panel, channels, |s| s.update_channel, |s, c| s.update_channel = c, true),
+                )
+                .description(channel_hint),
             )
+            .item(status)
     }
 }
 

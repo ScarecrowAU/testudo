@@ -2,6 +2,7 @@
 //! column (metadata, URL bar, frame, timeline, controls) and a details panel
 //! (Steps / Network / Console / Output) synced to the scrub time.
 
+use super::tables::{ConsoleItem, NetItem};
 use super::*;
 use crate::logic::{best_grid, compare_position, run_number, status_label, url_path};
 use crate::state::{ConsoleFilter, FocusTab, NetFilter};
@@ -20,28 +21,6 @@ struct StepItem {
     title: SharedString,
     kind: &'static str,
     failed: bool,
-}
-
-/// A request as shown in the focus view.
-#[derive(Clone)]
-struct NetItem {
-    started: f64,
-    rel: f64,
-    finished: Option<f64>,
-    method: SharedString,
-    status: Option<u16>,
-    error: Option<SharedString>,
-    kind: SharedString,
-    url: SharedString,
-    failed: bool,
-}
-
-#[derive(Clone)]
-struct ConsoleItem {
-    at: f64,
-    rel: f64,
-    level: SharedString,
-    text: SharedString,
 }
 
 fn step_kind(category: Option<&str>) -> &'static str {
@@ -188,17 +167,7 @@ impl TestudoApp {
         let net_all: Vec<NetItem> = page
             .network
             .iter()
-            .map(|r| NetItem {
-                started: r.started,
-                rel: (r.started - page.opened_at) / 1000.0,
-                finished: r.finished,
-                method: r.method.clone().into(),
-                status: r.status,
-                error: r.error.clone().map(Into::into),
-                kind: r.resource_type.clone().into(),
-                url: r.url.clone().into(),
-                failed: r.error.is_some() || r.status.is_some_and(|s| s >= 400),
-            })
+            .map(|r| NetItem::from_request(r, page.opened_at))
             .collect();
         let counts: Vec<usize> = NetFilter::ALL
             .iter()
@@ -253,13 +222,8 @@ impl TestudoApp {
             .collect();
         let cursor = frac(t);
 
-        if sync {
-            if let Some(i) = current_step {
-                self.steps_scroll.scroll_to_item(i, ScrollStrategy::Center);
-            }
-            if let Some(i) = current_net {
-                self.net_scroll.scroll_to_item(i, ScrollStrategy::Center);
-            }
+        if sync && let Some(i) = current_step {
+            self.steps_scroll.scroll_to_item(i, ScrollStrategy::Center);
         }
 
         // --- player column -------------------------------------------------
@@ -277,7 +241,8 @@ impl TestudoApp {
                     .items_center()
                     .child(
                         button("focus-back")
-                            .label("← All pages")
+                            .icon(IconName::ArrowLeft)
+                            .label("All pages")
                             .small()
                             .ghost()
                             .tooltip("Esc")
@@ -827,32 +792,36 @@ impl TestudoApp {
             .child(controls);
 
         // --- details panel -------------------------------------------------
-        let mut tabs = h_flex().gap_1().px_2().py_1().border_b_1().border_color(theme.border);
-        for (tb, name, count) in [
+        let focus_tabs = [
             (FocusTab::Steps, "Steps", Some(steps.len())),
             (FocusTab::Network, "Network", Some(net_all.len())),
             (FocusTab::Console, "Console", Some(console_total)),
             (FocusTab::Output, "Output", None),
-        ] {
-            let label = match count {
-                Some(n) => format!("{name} {n}"),
-                None => name.to_owned(),
-            };
-            tabs = tabs.child(
-                button(SharedString::from(format!("ftab-{name}")))
-                    .label(label)
-                    .xsmall()
-                    .ghost()
-                    .selected(tab == tb)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(f) = this.view_mut(w).and_then(|v| v.focus.as_mut()) {
-                            f.tab = tb;
-                            f.sync_lists = true;
-                        }
-                        cx.notify();
-                    })),
-            );
-        }
+        ];
+        let order = focus_tabs.map(|(tb, _, _)| tb);
+        let tab_bar = TabBar::new(("focus-tabs", w as usize))
+            .underline()
+            .xsmall()
+            .selected_index(order.iter().position(|tb| *tb == tab).unwrap_or(0))
+            .children(focus_tabs.map(|(_, name, count)| {
+                Tab::new().label(name).when_some(count, |t, n| {
+                    t.suffix(div().text_xs().text_color(theme.muted_foreground).child(n.to_string()))
+                })
+            }))
+            .on_click(cx.listener(move |this, ix: &usize, _, cx| {
+                if let (Some(f), Some(tb)) = (this.view_mut(w).and_then(|v| v.focus.as_mut()), order.get(*ix)) {
+                    f.tab = *tb;
+                    f.sync_lists = true;
+                }
+                cx.notify();
+            }));
+        let mut tabs = h_flex()
+            .gap_2()
+            .px_2()
+            .items_center()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(tab_bar);
         if console_errors > 0 {
             let noun = if console_errors == 1 { "error" } else { "errors" };
             tabs = tabs.child(pill(format!("{console_errors} console {noun}"), theme.red));
@@ -861,7 +830,7 @@ impl TestudoApp {
         let body: AnyElement = match tab {
             FocusTab::Steps => self.focus_steps(w, steps, current_step, t, cx).into_any_element(),
             FocusTab::Network => self
-                .focus_network(w, net, current_net, net_filter, &counts, t, cx)
+                .focus_network(w, net, current_net, net_filter, &counts, t, sync, cx)
                 .into_any_element(),
             FocusTab::Console => self.focus_console(w, console, console_filter, t, cx).into_any_element(),
             FocusTab::Output => div()
@@ -985,111 +954,43 @@ impl TestudoApp {
         filter: NetFilter,
         counts: &[usize],
         t: f64,
+        sync: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        let mut chips = h_flex().gap_1().flex_wrap();
-        for (i, f) in NetFilter::ALL.iter().copied().enumerate() {
-            if counts[i] == 0 && f != NetFilter::All && f != filter {
-                continue;
-            }
-            chips = chips.child(
-                button(SharedString::from(format!("nf-{}", f.label())))
-                    .label(format!("{} {}", f.label(), counts[i]))
-                    .xsmall()
-                    .ghost()
+        let shown: Vec<(NetFilter, usize)> = NetFilter::ALL
+            .iter()
+            .copied()
+            .zip(counts.iter().copied())
+            .filter(|&(f, n)| n > 0 || f == NetFilter::All || f == filter)
+            .collect();
+        let buttons: Vec<Button> = shown
+            .iter()
+            .map(|&(f, n)| {
+                Button::new(SharedString::from(format!("nf-{}", f.label())))
+                    .label(format!("{} {n}", f.label()))
                     .selected(filter == f)
-                    .when(f == NetFilter::Errors && counts[i] > 0, |b| b.danger())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(fc) = this.view_mut(w).and_then(|v| v.focus.as_mut()) {
-                            fc.net_filter = f;
-                            fc.sync_lists = true;
-                        }
-                        cx.notify();
-                    })),
-            );
-        }
-        let col = |wd: f32| div().w(px(wd)).flex_none();
-        let header = h_flex()
-            .px_2()
-            .gap_2()
-            .h(px(22.))
-            .items_center()
-            .border_b_1()
-            .border_color(theme.border)
-            .text_xs()
-            .text_color(theme.muted_foreground)
-            .child(col(62.).child("Time"))
-            .child(col(46.).child("Method"))
-            .child(col(46.).child("Status"))
-            .child(col(66.).child("Type"))
-            .child(col(62.).text_right().child("Duration"))
-            .child(div().flex_1().child("Path"));
-        let count = net.len();
-        let list = uniform_list(
-            "focus-net",
-            count,
-            cx.processor(move |_this, range: std::ops::Range<usize>, _, cx| {
-                range
-                    .map(|i| {
-                        let r = &net[i];
-                        let state = row_state(r.started, r.finished, t);
-                        let (status, color) = match state {
-                            RowState::Pending => (String::new(), theme.foreground.opacity(0.3)),
-                            RowState::InFlight => ("…".to_owned(), theme.blue),
-                            RowState::Done => (
-                                r.status
-                                    .map(|s| s.to_string())
-                                    .or_else(|| r.error.as_ref().map(|_| "ERR".to_owned()))
-                                    .unwrap_or_default(),
-                                if r.failed { theme.red } else { theme.foreground },
-                            ),
-                        };
-                        let dur = match (state, r.finished) {
-                            (RowState::Done, Some(f)) => format!("{:.0}ms", f - r.started),
-                            _ => String::new(),
-                        };
-                        let at = r.started;
-                        let tip: SharedString = match &r.error {
-                            Some(e) => format!("{}\n{e}", r.url).into(),
-                            None => r.url.clone(),
-                        };
-                        let mono = crate::fonts::mono();
-                        h_flex()
-                            .id(("net-row", i))
-                            .w_full()
-                            .h(px(22.))
-                            .px_2()
-                            .gap_2()
-                            .items_center()
-                            .text_xs()
-                            .text_color(color)
-                            .border_l_2()
-                            .border_color(if current == Some(i) {
-                                theme.blue
-                            } else {
-                                theme.transparent
-                            })
-                            .when(current == Some(i), |d| d.bg(theme.list_active))
-                            .cursor_pointer()
-                            .hover(|d| d.bg(theme.list_hover))
-                            .child(col(62.).font_family(mono.clone()).child(format!("{:>7.3}s", r.rel)))
-                            .child(col(46.).child(r.method.clone()))
-                            .child(col(46.).font_family(mono.clone()).child(status))
-                            .child(col(66.).truncate().child(r.kind.clone()))
-                            .child(col(62.).text_right().font_family(mono).child(dur))
-                            .child(div().flex_1().min_w_0().truncate().child(url_path(&r.url).to_owned()))
-                            .tooltip(tooltip_text(tip))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.with_focus(w, |f, page, _, _| f.seek(at, page));
-                                cx.notify();
-                            }))
-                    })
-                    .collect::<Vec<_>>()
-            }),
-        )
-        .track_scroll(&self.net_scroll)
-        .flex_1();
+                    .when(f == NetFilter::Errors && n > 0, |b| b.danger())
+            })
+            .collect();
+        let chips = ButtonGroup::new("net-filter")
+            .xsmall()
+            .ghost()
+            .flex_wrap()
+            .children(buttons)
+            .on_click(cx.listener(move |this, clicked: &Vec<usize>, _, cx| {
+                if let (Some(fc), Some((f, _))) = (
+                    this.view_mut(w).and_then(|v| v.focus.as_mut()),
+                    clicked.first().and_then(|i| shown.get(*i)),
+                ) {
+                    fc.net_filter = *f;
+                    fc.sync_lists = true;
+                }
+                cx.notify();
+            }));
+        let list = div()
+            .flex_1()
+            .min_h_0()
+            .child(self.net_table(net, t, current, sync, cx));
 
         v_flex()
             .size_full()
@@ -1107,7 +1008,6 @@ impl TestudoApp {
                             .child(Input::new(&self.net_search).xsmall()),
                     ),
             )
-            .child(header)
             .child(list)
     }
 
@@ -1119,82 +1019,34 @@ impl TestudoApp {
         t: f64,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        let mut chips = h_flex().gap_1().px_2().py_1();
-        for (f, name) in [
+        const FILTERS: [(ConsoleFilter, &str); 3] = [
             (ConsoleFilter::All, "All"),
             (ConsoleFilter::Errors, "Errors"),
             (ConsoleFilter::Warnings, "Warnings"),
-        ] {
-            chips = chips.child(
-                button(SharedString::from(format!("cf-{name}")))
-                    .label(name)
-                    .xsmall()
-                    .ghost()
-                    .selected(filter == f)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(fc) = this.view_mut(w).and_then(|v| v.focus.as_mut()) {
-                            fc.console_filter = f;
-                        }
-                        cx.notify();
-                    })),
-            );
-        }
-        let count = rows.len();
-        v_flex().size_full().child(chips).child(
-            uniform_list(
-                "focus-console",
-                count,
-                cx.processor(move |_this, range: std::ops::Range<usize>, _, cx| {
-                    range
-                        .map(|i| {
-                            let c = &rows[i];
-                            let base = match c.level.as_ref() {
-                                "error" => theme.red,
-                                "warning" | "warn" => theme.yellow,
-                                _ => theme.foreground,
-                            };
-                            let at = c.at;
-                            h_flex()
-                                .id(("console-row", i))
-                                .w_full()
-                                .min_h(px(22.))
-                                .px_2()
-                                .gap_2()
-                                .items_center()
-                                .text_xs()
-                                .when(c.at > t, |d| d.opacity(0.35))
-                                .cursor_pointer()
-                                .hover(|d| d.bg(theme.list_hover))
-                                .child(
-                                    div()
-                                        .w(px(62.))
-                                        .flex_none()
-                                        .font_family(crate::fonts::mono())
-                                        .text_color(theme.muted_foreground)
-                                        .child(format!("{:>7.3}s", c.rel)),
-                                )
-                                .child(div().w(px(64.)).flex_none().child(pill(c.level.clone(), base)))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_color(base)
-                                        .child(c.text.clone()),
-                                )
-                                .tooltip(tooltip_text(c.text.clone()))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.with_focus(w, |f, page, _, _| f.seek(at, page));
-                                    cx.notify();
-                                }))
-                        })
-                        .collect::<Vec<_>>()
-                }),
-            )
-            .track_scroll(&self.console_scroll)
-            .flex_1(),
-        )
+        ];
+        let chips = div().px_2().py_1().child(
+            ButtonGroup::new("console-filter")
+                .xsmall()
+                .ghost()
+                .children(FILTERS.map(|(f, name)| {
+                    Button::new(SharedString::from(format!("cf-{name}")))
+                        .label(name)
+                        .selected(filter == f)
+                }))
+                .on_click(cx.listener(move |this, clicked: &Vec<usize>, _, cx| {
+                    if let (Some(fc), Some((f, _))) = (
+                        this.view_mut(w).and_then(|v| v.focus.as_mut()),
+                        clicked.first().and_then(|i| FILTERS.get(*i)),
+                    ) {
+                        fc.console_filter = *f;
+                    }
+                    cx.notify();
+                })),
+        );
+        v_flex()
+            .size_full()
+            .child(chips)
+            .child(div().flex_1().min_h_0().child(self.console_table(rows, t, cx)))
     }
 
     /// Show one more (`delta` > 0) or one fewer earlier run.

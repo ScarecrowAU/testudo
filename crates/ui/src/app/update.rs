@@ -225,7 +225,7 @@ impl TestudoApp {
                     .child(div().flex_1())
                     .child(
                         button("update-dismiss")
-                            .label("✕")
+                            .icon(IconName::Close)
                             .small()
                             .ghost()
                             .tooltip("Hide until the next update")
@@ -259,24 +259,18 @@ impl TestudoApp {
                             .on_click(cx.listener(|this, _, _, cx| this.restart(cx))),
                     )
             }
-            UpdateState::InstallFailed(e) => bar()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_color(theme.red)
-                        .child(format!("Update failed: {e}")),
-                )
-                .child(
-                    button("update-failed-dismiss")
-                        .label("Dismiss")
+            UpdateState::InstallFailed(e) => {
+                return Some(
+                    Alert::error("update-failed", format!("Update failed: {e}"))
+                        .banner()
                         .small()
-                        .ghost()
-                        .on_click(cx.listener(|this, _, _, cx| {
+                        .on_close(cx.listener(|this, _, _, cx| {
                             this.updates.state = UpdateState::Idle;
                             cx.notify();
-                        })),
-                ),
+                        }))
+                        .into_any_element(),
+                );
+            }
             _ => return None,
         };
         Some(row.into_any_element())
