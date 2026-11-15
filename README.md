@@ -25,6 +25,8 @@ Native GUI test runner that controls, monitors and reports on multiple concurren
 
 Point Testudo at any directory, including a monorepo root, and it finds `playwright*.config.*`, Vitest configs and workspaces, and `vite.config.*` files with a `test` block. Each suite runs with the runner installed in its own project and the Node version from its `.nvmrc` / `.node-version` (nvm and fnm), so a monorepo can mix versions. Chromium is captured on every supported Playwright version; Firefox and WebKit where Playwright has `page.screencast`.
 
+In a git repository with linked worktrees, the directory box shows the main worktree and a selector beside it picks which worktree to scan and run; opening Testudo inside a linked worktree preselects it. Scans skip any folder below the root that has its own `.git` (linked worktrees such as `.claude/worktrees/*`, nested clones, submodules), so one worktree never lists another's suites.
+
 Runs on Linux and macOS.
 
 ## Screenshots
@@ -97,6 +99,33 @@ Recording resolution and frame rate, where recordings are kept, deleting old rec
 | `TESTUDO_KEEP_RUNS` | 200 | Delete whole runs beyond the newest N. |
 | `TESTUDO_MAX_FRAMES_MB` | 5120 | Oldest runs lose their frames first; results stay. |
 | `TESTUDO_KEEP_FRAMES` | `all` | `failed` keeps frames only for failing tests. |
+
+### Project config
+
+A project can give its runs extra environment variables and arguments in `.testudo/config.json` (JSON5: comments, unquoted keys, single quotes and trailing commas are fine). Testudo uses the nearest one at or above the scanned directory, up to the repository root, and paths in it are relative to the folder holding `.testudo`.
+
+```json5
+{
+  $schema: "https://raw.githubusercontent.com/ScarecrowAU/testudo/main/schemas/testudo-config.schema.json",
+  rules: [
+    // Global: no `path`, applies to every suite (of the listed runners).
+    { runner: "playwright", env: { CI: "1" }, args: ["--retries=1"] },
+    // Local: applies to suites whose directory matches the glob.
+    {
+      path: "apps/web/**",
+      runner: ["playwright", "vitest"],     // optional, default: all runners
+      env: { API_URL: "http://localhost:4000" },
+      env_file: "apps/web/.env.test",       // KEY=value lines
+      args: ["--workers=2"],
+      replaceGlobalArgs: true,              // drop the global rules' args
+    },
+  ],
+}
+```
+
+`path` matches the suite's directory: `*` stays within one folder, `**` crosses folders. Matching rules merge, globals first and then locals, each in file order, so local rules win conflicts. `env` merges by name (in a rule, `env` beats `env_file`). `args` are appended: global, then local, then the runner args typed in the GUI or given after `--`. Testudo's own variables take precedence, and `NODE_OPTIONS` and `PATH` are combined with Testudo's. The run output lists the variable names it set (not their values). Rules are read when suites are scanned, so rescan after editing. A config that doesn't parse, or a missing `env_file`, marks the affected suites as not runnable, with the reason.
+
+The `$schema` line gives editors completion, hover docs and validation from [`schemas/testudo-config.schema.json`](schemas/testudo-config.schema.json). Editors read `.json` files as JSON (with comments), so quote keys and use double quotes to keep the editor happy; Testudo itself accepts full JSON5 either way.
 
 ## How it works
 

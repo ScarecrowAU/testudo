@@ -56,17 +56,23 @@ pub struct RunSpec {
     /// Explicit config file (`-c` for Playwright, `--config` for Vitest).
     pub config: Option<PathBuf>,
     pub args: Vec<String>,
+    /// Extra environment for the runner (project config rules). Testudo's own
+    /// variables still win; `NODE_OPTIONS` and `PATH` are combined with them.
+    pub env: Vec<(String, String)>,
 }
 
 impl RunSpec {
-    /// The spec for running a discovered suite.
+    /// The spec for running a discovered suite: the project config's args
+    /// come before `args` (the user's runner args), and its env is added.
     pub fn for_suite(suite: &crate::discover::Suite, args: Vec<String>) -> Option<Self> {
+        let rc = &suite.run_config;
         Some(Self {
             label: suite.name.clone(),
             kind: suite.kind.runner()?,
             cwd: suite.dir.clone(),
             config: suite.config.clone(),
-            args,
+            args: rc.args.iter().cloned().chain(args).collect(),
+            env: rc.env.clone(),
         })
     }
 }
@@ -199,16 +205,32 @@ impl Orchestrator {
             note,
         } = build_command(&spec.kind, &cwd, spec.config.as_deref(), &spec.args, &inner.adapters)?;
 
+        // Project config env replaces inherited values, except NODE_OPTIONS
+        // (the preload is still added) and PATH (the project's Node still
+        // goes first).
+        let spec_env = |name: &str| spec.env.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v.clone());
         let preload = inner.adapters.join("preload.mjs");
         let mut node_options = format!("--import {}", file_url(&preload));
-        if let Ok(existing) = std::env::var("NODE_OPTIONS") {
+        if let Some(existing) = spec_env("NODE_OPTIONS").or_else(|| std::env::var("NODE_OPTIONS").ok()) {
             node_options = format!("{node_options} {existing}");
         }
 
         // Honour the project's .nvmrc/.node-version. Reported in the run output so
         // a version mismatch is visible rather than silent.
         let mut notes: Vec<String> = note.into_iter().collect();
-        let mut path_env = std::env::var_os("PATH").unwrap_or_default();
+        if !spec.env.is_empty() {
+            // Names only: values may be secrets.
+            let names: Vec<&str> = spec.env.iter().map(|(k, _)| k.as_str()).collect();
+            notes.push(format!(
+                "[testudo] env from {}: {}",
+                crate::project_config::CONFIG_PATH,
+                names.join(", ")
+            ));
+        }
+        let mut path_env = spec_env("PATH")
+            .map(Into::into)
+            .or_else(|| std::env::var_os("PATH"))
+            .unwrap_or_default();
         if !matches!(spec.kind, RunnerKind::Command { .. }) {
             match crate::node_env::resolve(&cwd) {
                 Some(Ok(choice)) => {
@@ -232,6 +254,12 @@ impl Orchestrator {
         let mut cmd = Command::new(&program);
         cmd.args(&args)
             .current_dir(&cwd)
+            .envs(
+                spec.env
+                    .iter()
+                    .filter(|(k, _)| k != "NODE_OPTIONS" && k != "PATH")
+                    .map(|(k, v)| (k, v)),
+            )
             .env("NODE_OPTIONS", node_options)
             .env(env::SOCKET, &inner.socket)
             .env(env::RUN_ID, &id)

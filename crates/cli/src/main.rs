@@ -161,6 +161,7 @@ async fn run(args: &[String], data: &std::path::Path) -> Result<i32> {
             cwd: dir.clone(),
             config: None,
             args: runner_args,
+            env: vec![],
         }],
         None => {
             let suites = discover(&dir);
