@@ -32,6 +32,13 @@ opentelemetry-otlp = { version = "0.33.1", default-features = false, features = 
 opentelemetry-appender-tracing = "0.33.1"
 tracing-opentelemetry = "0.34.0"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
+# Self-update (crates/update).
+flate2 = "1"
+minisign-verify = "0.3"
+semver = "1"
+tar = { version = "0.4", default-features = false }
+ureq = { version = "3.5", features = ["json"] }
+minisign = "0.10"
 
 # Dependencies (gpui, image decoding, sqlite) optimised even in dev builds:
 # unoptimised, a recorded frame takes ~100 ms to decode and playback in
