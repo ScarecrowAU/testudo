@@ -45,6 +45,10 @@ use crate::discover::SuiteKind;
 /// Location of the config file, relative to the project root.
 pub const CONFIG_PATH: &str = ".testudo/config.json";
 
+/// Where the config's JSON Schema is published, for `"$schema"`.
+pub const SCHEMA_URL: &str =
+    "https://raw.githubusercontent.com/ScarecrowAU/testudo/main/schemas/testudo-config.schema.json";
+
 /// What the matching rules add to one suite's runs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RunConfig {
@@ -71,26 +75,56 @@ struct Rule {
     replace_global_args: bool,
 }
 
+// The JSON Schema (`schemas/testudo-config.schema.json`) is generated from
+// these types and their doc comments; see `tests::schema_is_up_to_date`.
+
+/// Testudo project config (`.testudo/config.json`, JSON5): rules that give
+/// test runs extra environment variables and arguments.
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[cfg_attr(test, schemars(title = "Testudo project config"))]
 #[serde(deny_unknown_fields)]
 struct RawFile {
+    /// JSON Schema reference for editors; ignored by Testudo.
+    #[serde(default, rename = "$schema")]
+    #[allow(dead_code)]
+    schema: Option<String>,
+    /// Rules without `path` are global; rules with `path` are local. Matching
+    /// rules merge, globals first then locals, each in file order, so local
+    /// rules win conflicts.
     #[serde(default)]
     rules: Vec<RawRule>,
 }
 
+/// One rule. Every field is optional.
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[cfg_attr(test, schemars(rename = "Rule"))]
 #[serde(deny_unknown_fields)]
 struct RawRule {
+    /// Glob matched against the suite's directory, relative to the folder
+    /// holding `.testudo`: `*` stays within one folder, `**` crosses folders.
+    /// Without it the rule is global.
     #[serde(default)]
     path: Option<String>,
+    /// The runner(s) this rule applies to. Default: all.
     #[serde(default)]
+    #[cfg_attr(test, schemars(with = "Option<schema::Runners>"))]
     runner: Option<OneOrMany>,
+    /// Environment variables for the run. Merged by name; later rules win.
+    /// Overrides values from this rule's `env_file`.
     #[serde(default)]
     env: BTreeMap<String, Scalar>,
+    /// A `.env` file (KEY=value lines), relative to the folder holding
+    /// `.testudo`. Must exist when the rule applies.
     #[serde(default)]
     env_file: Option<String>,
+    /// Runner arguments, appended: global rules, then local rules, then the
+    /// runner args typed in the GUI or given after `--`.
     #[serde(default)]
     args: Vec<String>,
+    /// On a local rule (with `path`): drop the global rules' `args` for
+    /// matching suites.
     #[serde(default, rename = "replaceGlobalArgs", alias = "replace_global_args")]
     replace_global_args: bool,
 }
@@ -104,6 +138,7 @@ enum OneOrMany {
 
 /// An env value: strings as they are, numbers and booleans as written.
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(untagged)]
 enum Scalar {
     Str(String),
@@ -277,6 +312,26 @@ pub fn parse_dotenv(text: &str) -> Vec<(String, String)> {
     out
 }
 
+/// Schema-only types: what `runner` accepts, spelled out for editors.
+#[cfg(test)]
+mod schema {
+    #[derive(schemars::JsonSchema)]
+    #[serde(rename_all = "lowercase")]
+    #[allow(dead_code)]
+    pub enum Runner {
+        Playwright,
+        Vitest,
+    }
+
+    #[derive(schemars::JsonSchema)]
+    #[serde(untagged)]
+    #[allow(dead_code)]
+    pub enum Runners {
+        One(Runner),
+        Many(Vec<Runner>),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,6 +479,99 @@ mod tests {
         let c = ProjectConfig::find(&repo.join("apps/web")).unwrap().unwrap();
         assert_eq!(c.root, repo.canonicalize().unwrap());
         std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// `schemas/testudo-config.schema.json` matches these types. Regenerate:
+    /// `TESTUDO_UPDATE_SCHEMA=1 cargo test -p testudo-core schema_is_up_to_date`.
+    fn generated_schema() -> serde_json::Value {
+        let root = schemars::generate::SchemaSettings::draft07()
+            .into_generator()
+            .into_root_schema_for::<RawFile>();
+        let mut schema = serde_json::to_value(root).unwrap();
+        schema.as_object_mut().unwrap().insert("$id".into(), SCHEMA_URL.into());
+        sort_keys(schema)
+    }
+
+    /// Keys in sorted order at every level. Other workspace crates turn on
+    /// serde_json's `preserve_order`, which would otherwise make the file's key
+    /// order depend on which crates are being built.
+    fn sort_keys(value: serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(map) => {
+                let mut entries: Vec<_> = map.into_iter().collect();
+                entries.sort_by(|a, b| a.0.cmp(&b.0));
+                serde_json::Value::Object(entries.into_iter().map(|(k, v)| (k, sort_keys(v))).collect())
+            }
+            serde_json::Value::Array(items) => serde_json::Value::Array(items.into_iter().map(sort_keys).collect()),
+            other => other,
+        }
+    }
+
+    #[test]
+    fn schema_is_up_to_date() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/testudo-config.schema.json");
+        let text = serde_json::to_string_pretty(&generated_schema()).unwrap() + "\n";
+        if std::env::var_os("TESTUDO_UPDATE_SCHEMA").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &text).unwrap();
+            return;
+        }
+        let current = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            current == text,
+            "{} is out of date; regenerate it with \
+             `TESTUDO_UPDATE_SCHEMA=1 cargo test -p testudo-core schema_is_up_to_date`",
+            path.display()
+        );
+    }
+
+    /// The schema accepts what Testudo accepts (the README's example
+    /// included) and flags the mistakes Testudo rejects.
+    #[test]
+    fn schema_agrees_with_the_parser() {
+        let validator = jsonschema::validator_for(&generated_schema()).unwrap();
+        let readme = include_str!("../../../README.md");
+        let readme_example = readme
+            .split("```json5\n")
+            .nth(1)
+            .and_then(|rest| rest.split("```").next())
+            .expect("README has a json5 config example");
+        let good = [
+            readme_example,
+            r#"{ "$schema": "x", rules: [] }"#,
+            r#"{ rules: [{ path: 'a/*', runner: ['playwright', 'vitest'], env: { A: 'x', N: 3000, B: true },
+                 env_file: '.env', args: ['--x'], replaceGlobalArgs: true }] }"#,
+            "{}",
+        ];
+        for text in good {
+            let value: serde_json::Value = json5::from_str(text).unwrap();
+            let errors: Vec<String> = validator.iter_errors(&value).map(|e| e.to_string()).collect();
+            assert!(errors.is_empty(), "schema rejects {text}: {errors:?}");
+            ProjectConfig::parse(text, Path::new(ROOT)).unwrap_or_else(|e| panic!("Testudo rejects {text}: {e:#}"));
+        }
+        let bad = [
+            r#"{ rules: [{ runner: "playright" }] }"#,
+            r#"{ rules: [{ pathh: "x" }] }"#,
+            r#"{ rulez: [] }"#,
+            r#"{ rules: [{ env: { A: [1] } }] }"#,
+            r#"{ rules: [{ args: "--x" }] }"#,
+        ];
+        for text in bad {
+            let value: serde_json::Value = json5::from_str(text).unwrap();
+            assert!(!validator.is_valid(&value), "schema accepts {text}");
+            assert!(
+                ProjectConfig::parse(text, Path::new(ROOT)).is_err(),
+                "Testudo accepts {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn dollar_schema_is_accepted() {
+        let c = cfg(&format!(
+            r#"{{ "$schema": "{SCHEMA_URL}", "rules": [{{ "env": {{ "A": "1" }} }}] }}"#
+        ));
+        assert_eq!(env(&at(&c, SuiteKind::Vitest, "x"), "A"), Some("1"));
     }
 
     #[test]

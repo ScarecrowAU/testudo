@@ -1,0 +1,120 @@
+{
+  "$id": "https://raw.githubusercontent.com/ScarecrowAU/testudo/main/schemas/testudo-config.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Rule": {
+      "additionalProperties": false,
+      "description": "One rule. Every field is optional.",
+      "properties": {
+        "args": {
+          "default": [],
+          "description": "Runner arguments, appended: global rules, then local rules, then the\nrunner args typed in the GUI or given after `--`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "env": {
+          "additionalProperties": {
+            "$ref": "#/definitions/Scalar"
+          },
+          "description": "Environment variables for the run. Merged by name; later rules win.\nOverrides values from this rule's `env_file`.",
+          "type": "object"
+        },
+        "env_file": {
+          "default": null,
+          "description": "A `.env` file (KEY=value lines), relative to the folder holding\n`.testudo`. Must exist when the rule applies.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "default": null,
+          "description": "Glob matched against the suite's directory, relative to the folder\nholding `.testudo`: `*` stays within one folder, `**` crosses folders.\nWithout it the rule is global.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "replaceGlobalArgs": {
+          "default": false,
+          "description": "On a local rule (with `path`): drop the global rules' `args` for\nmatching suites.",
+          "type": "boolean"
+        },
+        "runner": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Runners"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The runner(s) this rule applies to. Default: all."
+        }
+      },
+      "type": "object"
+    },
+    "Runner": {
+      "enum": [
+        "playwright",
+        "vitest"
+      ],
+      "type": "string"
+    },
+    "Runners": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Runner"
+        },
+        {
+          "items": {
+            "$ref": "#/definitions/Runner"
+          },
+          "type": "array"
+        }
+      ]
+    },
+    "Scalar": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "format": "int64",
+          "type": "integer"
+        },
+        {
+          "format": "double",
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        }
+      ],
+      "description": "An env value: strings as they are, numbers and booleans as written."
+    }
+  },
+  "description": "Testudo project config (`.testudo/config.json`, JSON5): rules that give\ntest runs extra environment variables and arguments.",
+  "properties": {
+    "$schema": {
+      "default": null,
+      "description": "JSON Schema reference for editors; ignored by Testudo.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "rules": {
+      "description": "Rules without `path` are global; rules with `path` are local. Matching\nrules merge, globals first then locals, each in file order, so local\nrules win conflicts.",
+      "items": {
+        "$ref": "#/definitions/Rule"
+      },
+      "type": "array"
+    }
+  },
+  "title": "Testudo project config",
+  "type": "object"
+}

@@ -106,6 +106,7 @@ A project can give its runs extra environment variables and arguments in `.testu
 
 ```json5
 {
+  $schema: "https://raw.githubusercontent.com/ScarecrowAU/testudo/main/schemas/testudo-config.schema.json",
   rules: [
     // Global: no `path`, applies to every suite (of the listed runners).
     { runner: "playwright", env: { CI: "1" }, args: ["--retries=1"] },
@@ -123,6 +124,8 @@ A project can give its runs extra environment variables and arguments in `.testu
 ```
 
 `path` matches the suite's directory: `*` stays within one folder, `**` crosses folders. Matching rules merge, globals first and then locals, each in file order, so local rules win conflicts. `env` merges by name (in a rule, `env` beats `env_file`). `args` are appended: global, then local, then the runner args typed in the GUI or given after `--`. Testudo's own variables take precedence, and `NODE_OPTIONS` and `PATH` are combined with Testudo's. The run output lists the variable names it set (not their values). Rules are read when suites are scanned, so rescan after editing. A config that doesn't parse, or a missing `env_file`, marks the affected suites as not runnable, with the reason.
+
+The `$schema` line gives editors completion, hover docs and validation from [`schemas/testudo-config.schema.json`](schemas/testudo-config.schema.json). Editors read `.json` files as JSON (with comments), so quote keys and use double quotes to keep the editor happy; Testudo itself accepts full JSON5 either way.
 
 ## How it works
 
