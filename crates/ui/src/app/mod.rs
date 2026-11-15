@@ -555,10 +555,8 @@ impl TestudoApp {
             .split_whitespace()
             .map(str::to_owned)
             .collect();
-        let Some(spec) = RunSpec::for_suite(suite, args) else {
-            return;
-        };
-        match self.orchestrator.start(spec) {
+        let started = RunSpec::for_suite(suite, args).and_then(|spec| self.orchestrator.start(spec));
+        match started {
             Ok(handle) => {
                 self.live.selected_run = Some(handle.id.clone());
                 self.handles.insert(handle.id.clone(), handle);
@@ -626,10 +624,8 @@ impl TestudoApp {
                 return;
             }
         };
-        let Some(spec) = RunSpec::for_suite(&suite, args) else {
-            return;
-        };
-        match self.orchestrator.start(spec) {
+        let started = RunSpec::for_suite(&suite, args).and_then(|spec| self.orchestrator.start(spec));
+        match started {
             Ok(handle) => {
                 self.follow_run = Some(handle.id.clone());
                 self.live.selected_run = Some(handle.id.clone());

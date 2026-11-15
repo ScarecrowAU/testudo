@@ -64,15 +64,21 @@ pub struct RunSpec {
 impl RunSpec {
     /// The spec for running a discovered suite: the project config's args
     /// come before `args` (the user's runner args), and its env is added.
-    pub fn for_suite(suite: &crate::discover::Suite, args: Vec<String>) -> Option<Self> {
-        let rc = &suite.run_config;
-        Some(Self {
+    /// The config is read now, so edits since the scan apply; a broken config
+    /// or missing `env_file` is an error rather than a run without it.
+    pub fn for_suite(suite: &crate::discover::Suite, args: Vec<String>) -> anyhow::Result<Self> {
+        let kind = suite
+            .kind
+            .runner()
+            .with_context(|| format!("{} suites can't run yet", suite.kind.label()))?;
+        let rc = suite.run_config()?;
+        Ok(Self {
             label: suite.name.clone(),
-            kind: suite.kind.runner()?,
+            kind,
             cwd: suite.dir.clone(),
             config: suite.config.clone(),
-            args: rc.args.iter().cloned().chain(args).collect(),
-            env: rc.env.clone(),
+            args: rc.args.into_iter().chain(args).collect(),
+            env: rc.env,
         })
     }
 }
