@@ -174,7 +174,8 @@ gpui_kit::assets::icon_assets!(
         ChevronLeft,
         ChevronRight,
         Minus,
-        Plus
+        Plus,
+        GitBranch
     ]
 );
 

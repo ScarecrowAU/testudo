@@ -28,6 +28,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use testudo_core::discover::{Suite, discover};
 use testudo_core::settings::{DEFAULT_FRAME_MAX, FRAME_SIZES, Settings, UpdateChannel};
+use testudo_core::worktree::{self, Worktrees};
 use testudo_core::{Orchestrator, RunHandle, RunId, RunSpec, now_ms};
 use testudo_protocol::Event;
 use testudo_store::{RunRow, Store};
@@ -123,6 +124,10 @@ pub struct TestudoApp {
     net_search: Entity<InputState>,
     suites: Vec<Suite>,
     scanned: Option<PathBuf>,
+    /// The project's git worktrees, when it has linked ones (the selector).
+    worktrees: Option<Worktrees>,
+    /// Index into `worktrees.list` of the worktree being scanned and run.
+    worktree: usize,
     picking: bool,
 
     /// Frames replaced since the last render; freed with `drop_image` there.
@@ -164,9 +169,9 @@ impl TestudoApp {
         let filter_input = cx.new(|cx| InputState::new(window, cx).placeholder("filter output"));
         let net_search = cx.new(|cx| InputState::new(window, cx).placeholder("search URLs"));
         let subscriptions = vec![
-            cx.subscribe_in(&project_input, window, |this, _, ev: &InputEvent, _, cx| {
+            cx.subscribe_in(&project_input, window, |this, _, ev: &InputEvent, window, cx| {
                 if matches!(ev, InputEvent::PressEnter { .. }) {
-                    this.scan(cx);
+                    this.scan(window, cx);
                     this.mode = Mode::Live;
                 }
             }),
@@ -227,6 +232,8 @@ impl TestudoApp {
             net_search,
             suites: Vec::new(),
             scanned: None,
+            worktrees: None,
+            worktree: 0,
             picking: false,
             retired: Vec::new(),
             last_render: Instant::now(),
@@ -249,7 +256,7 @@ impl TestudoApp {
         app._subscriptions.extend(tables);
         let _ = s.rt.take();
         app.refresh_history();
-        app.scan(cx);
+        app.scan(window, cx);
         app.start_update_checks(cx);
         if let Some(filter) = s.autorun.as_deref() {
             app.autorun(filter, cx);
@@ -439,13 +446,21 @@ impl TestudoApp {
         }
     }
 
-    fn scan(&mut self, cx: &mut Context<Self>) {
+    /// Scan the project directory, in the selected worktree when the project
+    /// has linked worktrees.
+    fn scan(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let raw = self.project_input.read(cx).value().to_string();
-        let dir = PathBuf::from(expand_tilde(raw.trim()));
+        let typed = PathBuf::from(expand_tilde(raw.trim()));
+        let dir = if typed.is_dir() {
+            self.resolve_worktree(&typed, window, cx)
+        } else {
+            typed
+        };
         if !dir.is_dir() {
             self.suites.clear();
             self.scanned = None;
             self.error = Some(format!("{} is not a directory", dir.display()));
+            cx.notify();
             return;
         }
         let same = |a: &PathBuf, b: &PathBuf| {
@@ -461,6 +476,44 @@ impl TestudoApp {
         self.scanned = Some(dir);
         self.error = None;
         cx.notify();
+    }
+
+    /// The directory to scan for `typed`: itself outside a repository with
+    /// linked worktrees, otherwise the same subdirectory of the selected
+    /// worktree. A path inside a linked worktree selects that worktree and is
+    /// shown as the main worktree's path; rescanning the same repository keeps
+    /// the selection.
+    fn resolve_worktree(&mut self, typed: &std::path::Path, window: &mut Window, cx: &mut Context<Self>) -> PathBuf {
+        let Some(wts) = worktree::detect(typed) else {
+            self.worktrees = None;
+            self.worktree = 0;
+            return typed.to_owned();
+        };
+        let kept = self
+            .worktrees
+            .as_ref()
+            .filter(|old| old.main().path == wts.main().path)
+            .and_then(|old| old.list.get(self.worktree))
+            .and_then(|w| wts.position(&w.path));
+        self.worktree = if wts.current != 0 {
+            wts.current
+        } else {
+            kept.unwrap_or(0)
+        };
+        if wts.current != 0 {
+            let shown = wts.dir(0).display().to_string();
+            self.project_input.update(cx, |s, cx| s.set_value(shown, window, cx));
+        }
+        let dir = wts.dir(self.worktree);
+        self.worktrees = Some(wts);
+        dir
+    }
+
+    fn select_worktree(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let _span = tracing::info_span!("select_worktree", index = i).entered();
+        self.worktree = i;
+        self.scan(window, cx);
+        self.mode = Mode::Live;
     }
 
     /// Switching projects: stop its runs and clear the live view (runs, pages,
@@ -627,7 +680,7 @@ impl TestudoApp {
                 {
                     app.project_input
                         .update(cx, |s, cx| s.set_value(dir.display().to_string(), window, cx));
-                    app.scan(cx);
+                    app.scan(window, cx);
                     app.mode = Mode::Live;
                 }
                 cx.notify();
@@ -766,7 +819,7 @@ impl TestudoApp {
         let dir = dir.to_string_lossy().into_owned();
         if self.project_input.read(cx).value().as_ref() != dir.as_str() {
             self.project_input.update(cx, |s, cx| s.set_value(dir, window, cx));
-            self.scan(cx);
+            self.scan(window, cx);
         }
     }
 
@@ -950,6 +1003,51 @@ fn skip_card(note: String, theme: &gpui_kit::component::Theme) -> Div {
                         }),
                 ),
         )
+}
+
+impl TestudoApp {
+    /// Worktree selector beside the project directory: the selected worktree's
+    /// branch, opening a menu of all of them. Only when there are linked ones.
+    fn worktree_menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let wts = self.worktrees.as_ref()?;
+        let selected = self.worktree.min(wts.list.len() - 1);
+        let items: Vec<(usize, String)> = wts
+            .list
+            .iter()
+            .enumerate()
+            .map(|(i, w)| {
+                // Linked worktrees inside the main one by their path within it.
+                let place = match w.path.strip_prefix(&wts.main().path) {
+                    _ if i == 0 => "main worktree".to_owned(),
+                    Ok(rel) => rel.display().to_string(),
+                    Err(_) => tilde(&w.path),
+                };
+                (i, format!("{} · {place}", w.label()))
+            })
+            .collect();
+        let app = cx.entity().downgrade();
+        Some(
+            button("worktree")
+                .icon(media_icon("git-branch"))
+                .label(wts.list[selected].label())
+                .small()
+                .outline()
+                .dropdown_caret(true)
+                .tooltip(format!("Worktree: {}", tilde(&wts.list[selected].path)))
+                .dropdown_menu(move |mut menu, _, _| {
+                    menu = menu.label("Git worktree");
+                    for (i, text) in &items {
+                        let (app, i) = (app.clone(), *i);
+                        menu = menu.item(PopupMenuItem::new(text.clone()).checked(i == selected).on_click(
+                            move |_, window, cx| {
+                                let _ = app.update(cx, |this, cx| this.select_worktree(i, window, cx));
+                            },
+                        ));
+                    }
+                    menu
+                }),
+        )
+    }
 }
 
 /// Playback speed picker: the current speed, opening a menu of `SPEEDS`.
@@ -1157,14 +1255,15 @@ impl TestudoApp {
                     .on_click(cx.listener(|this, _, window, cx| this.pick_folder(window, cx))),
             )
             .child(div().w(px(380.)).child(Input::new(&self.project_input).small()))
+            .children(self.worktree_menu(cx))
             .child(
                 button("scan")
                     .icon(media_icon("refresh-cw"))
                     .label("Scan")
                     .small()
                     .tooltip("Find test suites in this directory")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.scan(cx);
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.scan(window, cx);
                         this.mode = Mode::Live;
                     })),
             )

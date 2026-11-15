@@ -11,6 +11,10 @@
 //!   workspace (or a config declaring `projects`) are left to that workspace.
 //! - Go modules: listed, not yet runnable.
 //!
+//! Directories below the root that are their own git checkout (a linked
+//! worktree, whose `.git` is a file, or a nested clone) are skipped, so the
+//! main worktree's scan never picks up a linked worktree's copy of a suite.
+//!
 //! Each suite resolves its runner from its own directory: the nearest
 //! `node_modules/.bin/<runner>` walking upward, and that copy's version. In a
 //! monorepo where apps pin different Playwright versions, each suite uses its
@@ -318,8 +322,12 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         let name = e.file_name().to_string_lossy().into_owned();
         let Ok(ft) = e.file_type() else { continue };
         if ft.is_dir() {
-            if !name.starts_with('.') && !SKIP_DIRS.contains(&name.as_str()) {
-                walk(&e.path(), depth + 1, out);
+            let path = e.path();
+            // A `.git` (a directory, or a file pointing at a worktree's gitdir)
+            // marks another checkout: a linked worktree or a nested clone.
+            // Its suites belong to it, not to the tree being scanned.
+            if !name.starts_with('.') && !SKIP_DIRS.contains(&name.as_str()) && !path.join(".git").exists() {
+                walk(&path, depth + 1, out);
             }
         } else if name.starts_with("playwright")
             || name.starts_with("vitest")
@@ -453,6 +461,33 @@ mod tests {
         let suites = discover(&root);
         assert_eq!(suites[0].name, "acme-shop · Playwright");
         std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn nested_worktrees_and_checkouts_are_skipped() {
+        let root = std::env::temp_dir().join(format!("testudo-discover-wt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        touch(&root, ".git/HEAD", "ref: refs/heads/main"); // the root's own repo: still scanned
+        touch(&root, "apps/web/playwright.config.ts", "");
+        // Linked worktrees: `.git` is a file pointing at the main repo's gitdir.
+        touch(
+            &root,
+            "worktrees/fix-cart/.git",
+            "gitdir: /src/shop/.git/worktrees/fix-cart",
+        );
+        touch(&root, "worktrees/fix-cart/apps/web/playwright.config.ts", "");
+        touch(
+            &root,
+            ".claude/worktrees/feat/.git",
+            "gitdir: /src/shop/.git/worktrees/feat",
+        );
+        touch(&root, ".claude/worktrees/feat/apps/web/playwright.config.ts", "");
+        // A separate clone inside the tree.
+        touch(&root, "vendor-clone/.git/HEAD", "ref: refs/heads/main");
+        touch(&root, "vendor-clone/vitest.config.ts", "");
+        let ids: Vec<String> = discover(&root).into_iter().map(|s| s.id).collect();
+        assert_eq!(ids, ["apps/web/playwright.config.ts"]);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

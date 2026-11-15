@@ -9,6 +9,7 @@ pub mod procs;
 pub mod runner;
 pub mod settings;
 pub mod shell_env;
+pub mod worktree;
 
 pub use hub::{Hub, HubMessage, RunId, now_ms};
 

@@ -25,6 +25,8 @@ Native GUI test runner that controls, monitors and reports on multiple concurren
 
 Point Testudo at any directory, including a monorepo root, and it finds `playwright*.config.*`, Vitest configs and workspaces, and `vite.config.*` files with a `test` block. Each suite runs with the runner installed in its own project and the Node version from its `.nvmrc` / `.node-version` (nvm and fnm), so a monorepo can mix versions. Chromium is captured on every supported Playwright version; Firefox and WebKit where Playwright has `page.screencast`.
 
+In a git repository with linked worktrees, the directory box shows the main worktree and a selector beside it picks which worktree to scan and run; opening Testudo inside a linked worktree preselects it. Scans skip any folder below the root that has its own `.git` (linked worktrees such as `.claude/worktrees/*`, nested clones, submodules), so one worktree never lists another's suites.
+
 Runs on Linux and macOS.
 
 ## Screenshots
