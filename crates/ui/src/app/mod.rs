@@ -17,6 +17,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::separator::Separator;
 use gpui_kit::component::tab::{Tab, TabBar};
+use gpui_kit::component::table::{DataTable, TableState};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
@@ -42,6 +43,7 @@ use crate::state::{InspectorTab, PageFocus, PagesView, Replay, Retired, StreamFi
 
 mod focus;
 mod settings;
+mod tables;
 mod update;
 
 const HISTORY_LIMIT: usize = 200;
@@ -139,8 +141,8 @@ pub struct TestudoApp {
     timeline_scrub: Rc<Cell<Bounds<Pixels>>>,
     /// Test span under the mouse on the replay timeline.
     timeline_hover: Option<usize>,
-    net_scroll: UniformListScrollHandle,
-    console_scroll: UniformListScrollHandle,
+    net_table: Entity<TableState<tables::NetTable>>,
+    console_table: Entity<TableState<tables::ConsoleTable>>,
     steps_scroll: UniformListScrollHandle,
     output_scroll: UniformListScrollHandle,
     _subscriptions: Vec<Subscription>,
@@ -237,12 +239,14 @@ impl TestudoApp {
             compare_area: Rc::new(Cell::new((Bounds::default(), (2, 1)))),
             timeline_scrub: Rc::new(Cell::new(Bounds::default())),
             timeline_hover: None,
-            net_scroll: UniformListScrollHandle::new(),
-            console_scroll: UniformListScrollHandle::new(),
+            net_table: tables::NetTable::state(window, cx),
+            console_table: tables::ConsoleTable::state(window, cx),
             steps_scroll: UniformListScrollHandle::new(),
             output_scroll: UniformListScrollHandle::new(),
             _subscriptions: subscriptions,
         };
+        let tables = app.table_subscriptions(window, cx);
+        app._subscriptions.extend(tables);
         let _ = s.rt.take();
         app.refresh_history();
         app.scan(cx);
@@ -1035,15 +1039,12 @@ fn media_icon(name: &str) -> Icon {
     Icon::empty().path(format!("icons/{name}.svg"))
 }
 
-fn mono_row(text: impl Into<SharedString>, color: Hsla) -> Div {
+fn inspect_hint(cx: &App) -> AnyElement {
     div()
-        .h(px(18.))
-        .font_family(crate::fonts::mono())
-        .text_xs()
-        .text_color(color)
-        .whitespace_nowrap()
-        .overflow_hidden()
-        .child(text.into())
+        .text_sm()
+        .text_color(cx.theme().muted_foreground)
+        .child("click a page to inspect it")
+        .into_any_element()
 }
 
 fn tooltip_text(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
@@ -1200,7 +1201,7 @@ impl TestudoApp {
         let store = self.store.clone();
         let panel = cx.new(|cx| settings::SettingsPanel::new(app, store, cx));
         window.open_dialog(cx, move |dialog, _, _| {
-            dialog.title("Settings").w(px(600.)).child(panel.clone())
+            dialog.title("Settings").w(px(820.)).child(panel.clone())
         });
     }
 
@@ -2163,81 +2164,43 @@ impl TestudoApp {
         v_flex().size_full().child(toolbar).child(list)
     }
 
-    fn render_network(&mut self, w: Which, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(view) = self.view(w) else { return v_flex() };
-        let muted = cx.theme().muted_foreground;
-        let Some(page) = view.selected_page.as_ref().and_then(|k| view.model.pages.get(k)) else {
-            return v_flex().child(div().text_sm().text_color(muted).child("click a page to inspect it"));
+    /// The selected page's requests, all finished as far as the inspector
+    /// is concerned (it has no scrub time).
+    fn render_network(&mut self, w: Which, cx: &mut Context<Self>) -> AnyElement {
+        let Some(view) = self.view(w) else {
+            return div().into_any_element();
         };
-        let text = cx.theme().foreground;
-        let red = cx.theme().red;
-        let rows: Rc<Vec<(Hsla, SharedString)>> = Rc::new(
+        let Some(page) = view.selected_page.as_ref().and_then(|k| view.model.pages.get(k)) else {
+            return inspect_hint(cx);
+        };
+        let rows = Rc::new(
             page.network
                 .iter()
-                .map(|r| {
-                    let status = match (&r.status, &r.error) {
-                        (Some(s), _) => s.to_string(),
-                        (None, Some(e)) => format!("ERR {e}"),
-                        (None, None) => "…".into(),
-                    };
-                    let ms = r
-                        .finished
-                        .map(|f| format!("{:.0}ms", f - r.started))
-                        .unwrap_or_default();
-                    let c = if r.error.is_some() || r.status.is_some_and(|s| s >= 400) {
-                        red
-                    } else {
-                        text
-                    };
-                    let line = format!(
-                        "{:<6} {:>5} {:>7} {:<10} {}",
-                        r.method,
-                        status,
-                        ms,
-                        r.resource_type,
-                        truncate(&r.url, 200)
-                    );
-                    (c, SharedString::from(line))
-                })
+                .map(|r| tables::NetItem::from_request(r, page.opened_at))
                 .collect(),
         );
-        let count = rows.len();
-        v_flex().size_full().child(
-            uniform_list(("net", w as usize), count, move |range, _, _| {
-                range.map(|i| mono_row(rows[i].1.clone(), rows[i].0)).collect()
-            })
-            .flex_1(),
-        )
+        self.net_table(rows, f64::INFINITY, None, false, cx).into_any_element()
     }
 
-    fn render_console(&mut self, w: Which, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(view) = self.view(w) else { return v_flex() };
-        let muted = cx.theme().muted_foreground;
-        let (text, red, gold) = (cx.theme().foreground, cx.theme().red, cx.theme().yellow);
-        let Some(page) = view.selected_page.as_ref().and_then(|k| view.model.pages.get(k)) else {
-            return v_flex().child(div().text_sm().text_color(muted).child("click a page to inspect it"));
+    fn render_console(&mut self, w: Which, cx: &mut Context<Self>) -> AnyElement {
+        let Some(view) = self.view(w) else {
+            return div().into_any_element();
         };
-        let rows: Rc<Vec<(Hsla, SharedString)>> = Rc::new(
+        let Some(page) = view.selected_page.as_ref().and_then(|k| view.model.pages.get(k)) else {
+            return inspect_hint(cx);
+        };
+        let rows = Rc::new(
             page.console
                 .iter()
-                .map(|c| {
-                    let color = match c.level.as_str() {
-                        "error" => red,
-                        "warning" | "warn" => gold,
-                        _ => text,
-                    };
-                    (color, SharedString::from(format!("[{}] {}", c.level, c.text)))
+                .map(|c| tables::ConsoleItem {
+                    at: c.at,
+                    rel: (c.at - page.opened_at) / 1000.0,
+                    level: c.level.clone().into(),
+                    text: c.text.clone().into(),
                 })
                 .collect(),
         );
-        let count = rows.len();
-        v_flex().size_full().child(
-            uniform_list(("console", w as usize), count, move |range, _, _| {
-                range.map(|i| mono_row(rows[i].1.clone(), rows[i].0)).collect()
-            })
-            .track_scroll(&self.console_scroll)
-            .flex_1(),
-        )
+        self.console_table(rows, f64::INFINITY, cx).into_any_element()
     }
 
     // --- history --------------------------------------------------------------

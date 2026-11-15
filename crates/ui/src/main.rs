@@ -162,6 +162,7 @@ gpui_kit::assets::icon_assets!(
         Download,
         Clock,
         Radio,
+        Video,
         Play,
         Pause,
         SkipBack,

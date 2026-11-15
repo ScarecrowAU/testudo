@@ -2,6 +2,7 @@
 //! column (metadata, URL bar, frame, timeline, controls) and a details panel
 //! (Steps / Network / Console / Output) synced to the scrub time.
 
+use super::tables::{ConsoleItem, NetItem};
 use super::*;
 use crate::logic::{best_grid, compare_position, run_number, status_label, url_path};
 use crate::state::{ConsoleFilter, FocusTab, NetFilter};
@@ -20,28 +21,6 @@ struct StepItem {
     title: SharedString,
     kind: &'static str,
     failed: bool,
-}
-
-/// A request as shown in the focus view.
-#[derive(Clone)]
-struct NetItem {
-    started: f64,
-    rel: f64,
-    finished: Option<f64>,
-    method: SharedString,
-    status: Option<u16>,
-    error: Option<SharedString>,
-    kind: SharedString,
-    url: SharedString,
-    failed: bool,
-}
-
-#[derive(Clone)]
-struct ConsoleItem {
-    at: f64,
-    rel: f64,
-    level: SharedString,
-    text: SharedString,
 }
 
 fn step_kind(category: Option<&str>) -> &'static str {
@@ -188,17 +167,7 @@ impl TestudoApp {
         let net_all: Vec<NetItem> = page
             .network
             .iter()
-            .map(|r| NetItem {
-                started: r.started,
-                rel: (r.started - page.opened_at) / 1000.0,
-                finished: r.finished,
-                method: r.method.clone().into(),
-                status: r.status,
-                error: r.error.clone().map(Into::into),
-                kind: r.resource_type.clone().into(),
-                url: r.url.clone().into(),
-                failed: r.error.is_some() || r.status.is_some_and(|s| s >= 400),
-            })
+            .map(|r| NetItem::from_request(r, page.opened_at))
             .collect();
         let counts: Vec<usize> = NetFilter::ALL
             .iter()
@@ -253,13 +222,8 @@ impl TestudoApp {
             .collect();
         let cursor = frac(t);
 
-        if sync {
-            if let Some(i) = current_step {
-                self.steps_scroll.scroll_to_item(i, ScrollStrategy::Center);
-            }
-            if let Some(i) = current_net {
-                self.net_scroll.scroll_to_item(i, ScrollStrategy::Center);
-            }
+        if sync && let Some(i) = current_step {
+            self.steps_scroll.scroll_to_item(i, ScrollStrategy::Center);
         }
 
         // --- player column -------------------------------------------------
@@ -866,7 +830,7 @@ impl TestudoApp {
         let body: AnyElement = match tab {
             FocusTab::Steps => self.focus_steps(w, steps, current_step, t, cx).into_any_element(),
             FocusTab::Network => self
-                .focus_network(w, net, current_net, net_filter, &counts, t, cx)
+                .focus_network(w, net, current_net, net_filter, &counts, t, sync, cx)
                 .into_any_element(),
             FocusTab::Console => self.focus_console(w, console, console_filter, t, cx).into_any_element(),
             FocusTab::Output => div()
@@ -990,9 +954,9 @@ impl TestudoApp {
         filter: NetFilter,
         counts: &[usize],
         t: f64,
+        sync: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let theme = cx.theme().clone();
         let shown: Vec<(NetFilter, usize)> = NetFilter::ALL
             .iter()
             .copied()
@@ -1011,6 +975,7 @@ impl TestudoApp {
         let chips = ButtonGroup::new("net-filter")
             .xsmall()
             .ghost()
+            .flex_wrap()
             .children(buttons)
             .on_click(cx.listener(move |this, clicked: &Vec<usize>, _, cx| {
                 if let (Some(fc), Some((f, _))) = (
@@ -1022,87 +987,10 @@ impl TestudoApp {
                 }
                 cx.notify();
             }));
-        let col = |wd: f32| div().w(px(wd)).flex_none();
-        let header = h_flex()
-            .px_2()
-            .gap_2()
-            .h(px(22.))
-            .items_center()
-            .border_b_1()
-            .border_color(theme.border)
-            .text_xs()
-            .text_color(theme.muted_foreground)
-            .child(col(62.).child("Time"))
-            .child(col(46.).child("Method"))
-            .child(col(46.).child("Status"))
-            .child(col(66.).child("Type"))
-            .child(col(62.).text_right().child("Duration"))
-            .child(div().flex_1().child("Path"));
-        let count = net.len();
-        let list = uniform_list(
-            "focus-net",
-            count,
-            cx.processor(move |_this, range: std::ops::Range<usize>, _, cx| {
-                range
-                    .map(|i| {
-                        let r = &net[i];
-                        let state = row_state(r.started, r.finished, t);
-                        let (status, color) = match state {
-                            RowState::Pending => (String::new(), theme.foreground.opacity(0.3)),
-                            RowState::InFlight => ("…".to_owned(), theme.blue),
-                            RowState::Done => (
-                                r.status
-                                    .map(|s| s.to_string())
-                                    .or_else(|| r.error.as_ref().map(|_| "ERR".to_owned()))
-                                    .unwrap_or_default(),
-                                if r.failed { theme.red } else { theme.foreground },
-                            ),
-                        };
-                        let dur = match (state, r.finished) {
-                            (RowState::Done, Some(f)) => format!("{:.0}ms", f - r.started),
-                            _ => String::new(),
-                        };
-                        let at = r.started;
-                        let tip: SharedString = match &r.error {
-                            Some(e) => format!("{}\n{e}", r.url).into(),
-                            None => r.url.clone(),
-                        };
-                        let mono = crate::fonts::mono();
-                        h_flex()
-                            .id(("net-row", i))
-                            .w_full()
-                            .h(px(22.))
-                            .px_2()
-                            .gap_2()
-                            .items_center()
-                            .text_xs()
-                            .text_color(color)
-                            .border_l_2()
-                            .border_color(if current == Some(i) {
-                                theme.blue
-                            } else {
-                                theme.transparent
-                            })
-                            .when(current == Some(i), |d| d.bg(theme.list_active))
-                            .cursor_pointer()
-                            .hover(|d| d.bg(theme.list_hover))
-                            .child(col(62.).font_family(mono.clone()).child(format!("{:>7.3}s", r.rel)))
-                            .child(col(46.).child(r.method.clone()))
-                            .child(col(46.).font_family(mono.clone()).child(status))
-                            .child(col(66.).truncate().child(r.kind.clone()))
-                            .child(col(62.).text_right().font_family(mono).child(dur))
-                            .child(div().flex_1().min_w_0().truncate().child(url_path(&r.url).to_owned()))
-                            .tooltip(tooltip_text(tip))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.with_focus(w, |f, page, _, _| f.seek(at, page));
-                                cx.notify();
-                            }))
-                    })
-                    .collect::<Vec<_>>()
-            }),
-        )
-        .track_scroll(&self.net_scroll)
-        .flex_1();
+        let list = div()
+            .flex_1()
+            .min_h_0()
+            .child(self.net_table(net, t, current, sync, cx));
 
         v_flex()
             .size_full()
@@ -1120,7 +1008,6 @@ impl TestudoApp {
                             .child(Input::new(&self.net_search).xsmall()),
                     ),
             )
-            .child(header)
             .child(list)
     }
 
@@ -1132,7 +1019,6 @@ impl TestudoApp {
         t: f64,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let theme = cx.theme().clone();
         const FILTERS: [(ConsoleFilter, &str); 3] = [
             (ConsoleFilter::All, "All"),
             (ConsoleFilter::Errors, "Errors"),
@@ -1157,61 +1043,10 @@ impl TestudoApp {
                     cx.notify();
                 })),
         );
-        let count = rows.len();
-        v_flex().size_full().child(chips).child(
-            uniform_list(
-                "focus-console",
-                count,
-                cx.processor(move |_this, range: std::ops::Range<usize>, _, cx| {
-                    range
-                        .map(|i| {
-                            let c = &rows[i];
-                            let base = match c.level.as_ref() {
-                                "error" => theme.red,
-                                "warning" | "warn" => theme.yellow,
-                                _ => theme.foreground,
-                            };
-                            let at = c.at;
-                            h_flex()
-                                .id(("console-row", i))
-                                .w_full()
-                                .min_h(px(22.))
-                                .px_2()
-                                .gap_2()
-                                .items_center()
-                                .text_xs()
-                                .when(c.at > t, |d| d.opacity(0.35))
-                                .cursor_pointer()
-                                .hover(|d| d.bg(theme.list_hover))
-                                .child(
-                                    div()
-                                        .w(px(62.))
-                                        .flex_none()
-                                        .font_family(crate::fonts::mono())
-                                        .text_color(theme.muted_foreground)
-                                        .child(format!("{:>7.3}s", c.rel)),
-                                )
-                                .child(div().w(px(64.)).flex_none().child(pill(c.level.clone(), base)))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_color(base)
-                                        .child(c.text.clone()),
-                                )
-                                .tooltip(tooltip_text(c.text.clone()))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.with_focus(w, |f, page, _, _| f.seek(at, page));
-                                    cx.notify();
-                                }))
-                        })
-                        .collect::<Vec<_>>()
-                }),
-            )
-            .track_scroll(&self.console_scroll)
-            .flex_1(),
-        )
+        v_flex()
+            .size_full()
+            .child(chips)
+            .child(div().flex_1().min_h_0().child(self.console_table(rows, t, cx)))
     }
 
     /// Show one more (`delta` > 0) or one fewer earlier run.
