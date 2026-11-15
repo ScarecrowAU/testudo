@@ -83,7 +83,12 @@ jobs:
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libx11-xcb-dev libxcb1-dev libvulkan-dev
 
+      # rust-cache's own key ignores [profile] changes, which recompile every
+      # crate; keyed on the manifest too, such a change saves a fresh cache
+      # instead of restoring a stale one on every run.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ hashFiles('Cargo.toml') }}
 
       # The updater compares the tag with the version built into the binary.
       - name: Check the tag matches the version
