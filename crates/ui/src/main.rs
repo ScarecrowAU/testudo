@@ -155,10 +155,13 @@ fn main() -> Result<()> {
 }
 
 // gpui-kit's `Assets` embeds only the icons its components use; add the
-// player's media icons.
+// player's media icons and the app's own.
 gpui_kit::assets::icon_assets!(
     MediaIcons,
     [
+        Download,
+        Clock,
+        Radio,
         Play,
         Pause,
         SkipBack,

@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 use gpui_kit::component::WindowExt;
 use gpui_kit::component::button::ButtonVariant;
+use gpui_kit::component::switch::Switch;
 use testudo_core::settings::{DEFAULT_FRAME_RATE, FRAME_RATES};
 
 use super::update::UpdateState;
@@ -295,7 +296,7 @@ impl Render for SettingsPanel {
                     .text_color(muted)
                     .child("Applies to runs started from now on."),
             )
-            .child(div().h(px(1.)).bg(theme.border))
+            .child(Separator::horizontal())
             .child(section("STORAGE"))
             .child(
                 v_flex()
@@ -372,12 +373,13 @@ impl Render for SettingsPanel {
                     .on_click(cx.listener(|p, _, window, cx| p.confirm_delete(None, window, cx)))
                     .into_any_element(),
             ))
-            .child(div().h(px(1.)).bg(theme.border))
+            .child(Separator::horizontal())
             .child(section("UPDATES"))
             .child(row(
                 "Check for updates",
                 Some("At startup and once a day."),
-                Checkbox::new("check-updates")
+                Switch::new("check-updates")
+                    .small()
                     .checked(check_updates)
                     .on_click(cx.listener(|p, checked: &bool, _, cx| {
                         let on = *checked;

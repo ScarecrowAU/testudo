@@ -9,16 +9,20 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
-use gpui_kit::component::Icon;
 use gpui_kit::component::WindowExt;
-use gpui_kit::component::button::{Button, ButtonRounded, ButtonVariants};
+use gpui_kit::component::alert::Alert;
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonRounded, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::separator::Separator;
+use gpui_kit::component::tab::{Tab, TabBar};
+use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     ActiveTheme, Disableable, Selectable, Sizable, h_flex, h_resizable, resizable_panel, v_flex, v_resizable,
 };
+use gpui_kit::component::{Icon, IconName};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use testudo_core::discover::{Suite, discover};
@@ -892,15 +896,16 @@ fn tone(t: Tone, cx: &App) -> Hsla {
 }
 
 /// A small tinted label: status, browser, kind, counts.
-fn pill(text: impl Into<SharedString>, color: Hsla) -> Div {
-    div()
-        .flex_none()
-        .px_2()
+/// Kept to the text's height (no border or vertical padding) so it fits the
+/// fixed-height virtualized rows.
+fn pill(text: impl Into<SharedString>, color: Hsla) -> Tag {
+    Tag::custom(color.opacity(0.16), color, gpui_kit::transparent_black())
         .rounded_full()
+        .border_0()
+        .px_2()
+        .py_0()
+        .flex_none()
         .whitespace_nowrap()
-        .text_xs()
-        .bg(color.opacity(0.16))
-        .text_color(color)
         .child(text.into())
 }
 
@@ -1088,11 +1093,15 @@ impl Render for TestudoApp {
             .on_action(cx.listener(Self::on_close_focus))
             .child(self.render_top_bar(window, cx))
             .children(self.render_update_banner(cx))
-            .children(
-                self.error
-                    .clone()
-                    .map(|e| div().px_3().py_1().text_sm().text_color(cx.theme().red).child(e)),
-            )
+            .children(self.error.clone().map(|e| {
+                Alert::error("app-error", e)
+                    .banner()
+                    .small()
+                    .on_close(cx.listener(|this, _, _, cx| {
+                        this.error = None;
+                        cx.notify();
+                    }))
+            }))
             .child(div().flex_1().min_h_0().child(body))
     }
 }
@@ -1114,35 +1123,33 @@ impl TestudoApp {
                     .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Testudo")),
             )
             .child(
-                button("mode-live")
-                    .label("● Live")
+                TabBar::new("mode")
+                    .segmented()
                     .small()
-                    .ghost()
-                    .selected(mode == Mode::Live)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let _span = tracing::info_span!("switch_mode", to = "live").entered();
-                        this.mode = Mode::Live;
+                    .selected_index(match mode {
+                        Mode::Live => 0,
+                        Mode::History => 1,
+                    })
+                    .child(Tab::new().label("Live").prefix(media_icon("radio").small()))
+                    .child(Tab::new().label("History").prefix(media_icon("clock").small()))
+                    .on_click(cx.listener(|this, ix: &usize, _, cx| {
+                        if *ix == 0 {
+                            let _span = tracing::info_span!("switch_mode", to = "live").entered();
+                            this.mode = Mode::Live;
+                        } else {
+                            let _span = tracing::info_span!("switch_mode", to = "history").entered();
+                            this.refresh_history();
+                            this.mode = Mode::History;
+                        }
                         cx.notify();
                     })),
             )
-            .child(
-                button("mode-history")
-                    .label("History")
-                    .small()
-                    .ghost()
-                    .selected(mode == Mode::History)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let _span = tracing::info_span!("switch_mode", to = "history").entered();
-                        this.refresh_history();
-                        this.mode = Mode::History;
-                        cx.notify();
-                    })),
-            )
-            .child(div().w(px(1.)).h(px(18.)).bg(cx.theme().border))
+            .child(Separator::vertical().h(px(18.)))
             .child(
                 button("pick-folder")
-                    .label(if self.picking { "…" } else { "📂" })
+                    .icon(media_icon("folder-open"))
                     .small()
+                    .loading(self.picking)
                     .disabled(self.picking)
                     .when(self.picking, |b| b.cursor_default())
                     .tooltip("Choose a project directory")
@@ -1151,7 +1158,8 @@ impl TestudoApp {
             .child(div().w(px(380.)).child(Input::new(&self.project_input).small()))
             .child(
                 button("scan")
-                    .label("⟳ Scan")
+                    .icon(media_icon("refresh-cw"))
+                    .label("Scan")
                     .small()
                     .tooltip("Find test suites in this directory")
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1225,7 +1233,7 @@ impl TestudoApp {
                     .overflow_y_scroll()
                     .child(self.render_suites(cx)),
             )
-            .child(div().h(px(1.)).bg(cx.theme().border).my_1())
+            .child(Separator::horizontal().my_1())
             .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child("Runs"))
             .when(self.live.model.runs.is_empty(), |d| {
                 d.child(
@@ -1288,7 +1296,7 @@ impl TestudoApp {
                     .gap_2()
                     .child(
                         button(("run-suite", i))
-                            .label("▶")
+                            .icon(media_icon("play"))
                             .xsmall()
                             .disabled(!s.runnable())
                             .when(!s.runnable(), |b| b.cursor_default())
@@ -1310,7 +1318,7 @@ impl TestudoApp {
                             .map(|v| div().text_xs().text_color(muted).child(v)),
                     )
                     .when(!s.warnings.is_empty(), |d| {
-                        d.child(div().text_color(cx.theme().yellow).child("⚠"))
+                        d.child(media_icon("triangle-alert").small().text_color(cx.theme().yellow))
                     })
                     .tooltip(tooltip_text(hover.join("\n"))),
             );
@@ -1318,7 +1326,8 @@ impl TestudoApp {
         if runnable > 1 {
             col = col.child(
                 button("run-all")
-                    .label(format!("▶ Run all {runnable}"))
+                    .icon(media_icon("play"))
+                    .label(format!("Run all {runnable}"))
                     .small()
                     .on_click(cx.listener(|this, _, _, cx| {
                         let all: Vec<Suite> = this.suites.iter().filter(|s| s.runnable()).cloned().collect();
@@ -1418,7 +1427,7 @@ impl TestudoApp {
                             )
                             .child(
                                 button(("close-error", i))
-                                    .label("✕")
+                                    .icon(IconName::Close)
                                     .xsmall()
                                     .ghost()
                                     .tooltip("Close")
@@ -1477,9 +1486,7 @@ impl TestudoApp {
         };
         let line = || div().w_full().h(px(RUN_ROW_H)).flex().items_center().overflow_hidden();
         match *row {
-            ListRow::Gap => line()
-                .child(div().w_full().h(px(1.)).bg(theme.border))
-                .into_any_element(),
+            ListRow::Gap => line().child(Separator::horizontal()).into_any_element(),
             ListRow::Header(ri) => {
                 let Some(run) = view.model.runs.get(ri) else {
                     return line().into_any_element();
@@ -1875,33 +1882,31 @@ impl TestudoApp {
         };
         let selected_page = view.selected_page.clone();
 
-        let mut tabs = h_flex()
-            .gap_1()
-            .px_2()
-            .py_1()
-            .border_t_1()
-            .border_b_1()
-            .border_color(cx.theme().border);
-        for (t, name) in [
+        const TABS: [(InspectorTab, &str); 3] = [
             (InspectorTab::Network, "Network"),
             (InspectorTab::Console, "Console"),
             (InspectorTab::Output, "Output"),
-        ] {
-            tabs = tabs.child(
-                button(SharedString::from(format!("tab-{name}")))
-                    .label(name)
-                    .xsmall()
-                    .ghost()
-                    .selected(tab == t)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(v) = this.view_mut(w) {
-                            v.inspector_tab = t;
-                        }
-                        cx.notify();
-                    })),
-            );
-        }
-        tabs = tabs.child(div().text_xs().text_color(muted).child(label));
+        ];
+        let tab_bar = TabBar::new(("inspector-tabs", w as usize))
+            .underline()
+            .xsmall()
+            .selected_index(TABS.iter().position(|(t, _)| *t == tab).unwrap_or(0))
+            .children(TABS.map(|(_, name)| Tab::new().label(name)))
+            .on_click(cx.listener(move |this, ix: &usize, _, cx| {
+                if let (Some(v), Some((t, _))) = (this.view_mut(w), TABS.get(*ix)) {
+                    v.inspector_tab = *t;
+                }
+                cx.notify();
+            }));
+        let mut tabs = h_flex()
+            .gap_2()
+            .px_2()
+            .items_center()
+            .border_t_1()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(tab_bar)
+            .child(div().text_xs().text_color(muted).child(label));
         if w == Which::Replay
             && let (Some(store), Some(replay)) = (self.store.clone(), self.replay.as_ref())
         {
@@ -1919,7 +1924,8 @@ impl TestudoApp {
                 } else {
                     let st = store.clone();
                     button("export")
-                        .label("⬇ Export MP4")
+                        .icon(media_icon("download"))
+                        .label("Export MP4")
                         .xsmall()
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some(r) = this.replay.as_mut() {
@@ -1933,8 +1939,9 @@ impl TestudoApp {
             let dir = store.exports_dir();
             tabs = tabs.child(
                 button("exports-dir")
-                    .label("📂")
+                    .icon(media_icon("folder-open"))
                     .xsmall()
+                    .ghost()
                     .tooltip("Open exports folder")
                     .on_click(move |_, _, _| {
                         let _ = std::fs::create_dir_all(&dir);
@@ -2032,26 +2039,25 @@ impl TestudoApp {
             v.output_seen = count;
         }
 
-        let mut chips = h_flex().gap_1();
-        for (f, name) in [
+        const STREAMS: [(StreamFilter, &str); 3] = [
             (StreamFilter::All, "All"),
             (StreamFilter::Stdout, "stdout"),
             (StreamFilter::Stderr, "stderr"),
-        ] {
-            chips = chips.child(
-                button(SharedString::from(format!("os-{name}-{}", w as usize)))
+        ];
+        let chips = ButtonGroup::new(("output-stream", w as usize))
+            .xsmall()
+            .ghost()
+            .children(STREAMS.map(|(f, name)| {
+                Button::new(SharedString::from(format!("os-{name}")))
                     .label(name)
-                    .xsmall()
-                    .ghost()
                     .selected(stream == f)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(v) = this.view_mut(w) {
-                            v.output_stream = f;
-                        }
-                        cx.notify();
-                    })),
-            );
-        }
+            }))
+            .on_click(cx.listener(move |this, clicked: &Vec<usize>, _, cx| {
+                if let (Some(v), Some((f, _))) = (this.view_mut(w), clicked.first().and_then(|i| STREAMS.get(*i))) {
+                    v.output_stream = *f;
+                }
+                cx.notify();
+            }));
         let toolbar = h_flex()
             .gap_2()
             .py_1()
@@ -2313,8 +2319,9 @@ impl TestudoApp {
                     .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child("History"))
                     .child(
                         button("hist-refresh")
-                            .label("⟳")
+                            .icon(media_icon("refresh-cw"))
                             .xsmall()
+                            .ghost()
                             .tooltip("Refresh")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.refresh_history();
@@ -2338,8 +2345,7 @@ impl TestudoApp {
                     .child(list),
             )
             .when(self.replay.is_some(), |d| {
-                d.child(div().h(px(1.)).bg(cx.theme().border))
-                    .child(self.run_list(Which::Replay, cx))
+                d.child(Separator::horizontal()).child(self.run_list(Which::Replay, cx))
             });
 
         let replay_focus = self.replay.as_ref().is_some_and(|r| r.view.focus.is_some());

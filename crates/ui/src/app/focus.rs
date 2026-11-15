@@ -277,7 +277,8 @@ impl TestudoApp {
                     .items_center()
                     .child(
                         button("focus-back")
-                            .label("← All pages")
+                            .icon(IconName::ArrowLeft)
+                            .label("All pages")
                             .small()
                             .ghost()
                             .tooltip("Esc")
@@ -827,32 +828,36 @@ impl TestudoApp {
             .child(controls);
 
         // --- details panel -------------------------------------------------
-        let mut tabs = h_flex().gap_1().px_2().py_1().border_b_1().border_color(theme.border);
-        for (tb, name, count) in [
+        let focus_tabs = [
             (FocusTab::Steps, "Steps", Some(steps.len())),
             (FocusTab::Network, "Network", Some(net_all.len())),
             (FocusTab::Console, "Console", Some(console_total)),
             (FocusTab::Output, "Output", None),
-        ] {
-            let label = match count {
-                Some(n) => format!("{name} {n}"),
-                None => name.to_owned(),
-            };
-            tabs = tabs.child(
-                button(SharedString::from(format!("ftab-{name}")))
-                    .label(label)
-                    .xsmall()
-                    .ghost()
-                    .selected(tab == tb)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(f) = this.view_mut(w).and_then(|v| v.focus.as_mut()) {
-                            f.tab = tb;
-                            f.sync_lists = true;
-                        }
-                        cx.notify();
-                    })),
-            );
-        }
+        ];
+        let order = focus_tabs.map(|(tb, _, _)| tb);
+        let tab_bar = TabBar::new(("focus-tabs", w as usize))
+            .underline()
+            .xsmall()
+            .selected_index(order.iter().position(|tb| *tb == tab).unwrap_or(0))
+            .children(focus_tabs.map(|(_, name, count)| {
+                Tab::new().label(name).when_some(count, |t, n| {
+                    t.suffix(div().text_xs().text_color(theme.muted_foreground).child(n.to_string()))
+                })
+            }))
+            .on_click(cx.listener(move |this, ix: &usize, _, cx| {
+                if let (Some(f), Some(tb)) = (this.view_mut(w).and_then(|v| v.focus.as_mut()), order.get(*ix)) {
+                    f.tab = *tb;
+                    f.sync_lists = true;
+                }
+                cx.notify();
+            }));
+        let mut tabs = h_flex()
+            .gap_2()
+            .px_2()
+            .items_center()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(tab_bar);
         if console_errors > 0 {
             let noun = if console_errors == 1 { "error" } else { "errors" };
             tabs = tabs.child(pill(format!("{console_errors} console {noun}"), theme.red));
@@ -988,27 +993,35 @@ impl TestudoApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let mut chips = h_flex().gap_1().flex_wrap();
-        for (i, f) in NetFilter::ALL.iter().copied().enumerate() {
-            if counts[i] == 0 && f != NetFilter::All && f != filter {
-                continue;
-            }
-            chips = chips.child(
-                button(SharedString::from(format!("nf-{}", f.label())))
-                    .label(format!("{} {}", f.label(), counts[i]))
-                    .xsmall()
-                    .ghost()
+        let shown: Vec<(NetFilter, usize)> = NetFilter::ALL
+            .iter()
+            .copied()
+            .zip(counts.iter().copied())
+            .filter(|&(f, n)| n > 0 || f == NetFilter::All || f == filter)
+            .collect();
+        let buttons: Vec<Button> = shown
+            .iter()
+            .map(|&(f, n)| {
+                Button::new(SharedString::from(format!("nf-{}", f.label())))
+                    .label(format!("{} {n}", f.label()))
                     .selected(filter == f)
-                    .when(f == NetFilter::Errors && counts[i] > 0, |b| b.danger())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(fc) = this.view_mut(w).and_then(|v| v.focus.as_mut()) {
-                            fc.net_filter = f;
-                            fc.sync_lists = true;
-                        }
-                        cx.notify();
-                    })),
-            );
-        }
+                    .when(f == NetFilter::Errors && n > 0, |b| b.danger())
+            })
+            .collect();
+        let chips = ButtonGroup::new("net-filter")
+            .xsmall()
+            .ghost()
+            .children(buttons)
+            .on_click(cx.listener(move |this, clicked: &Vec<usize>, _, cx| {
+                if let (Some(fc), Some((f, _))) = (
+                    this.view_mut(w).and_then(|v| v.focus.as_mut()),
+                    clicked.first().and_then(|i| shown.get(*i)),
+                ) {
+                    fc.net_filter = *f;
+                    fc.sync_lists = true;
+                }
+                cx.notify();
+            }));
         let col = |wd: f32| div().w(px(wd)).flex_none();
         let header = h_flex()
             .px_2()
@@ -1120,26 +1133,30 @@ impl TestudoApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let mut chips = h_flex().gap_1().px_2().py_1();
-        for (f, name) in [
+        const FILTERS: [(ConsoleFilter, &str); 3] = [
             (ConsoleFilter::All, "All"),
             (ConsoleFilter::Errors, "Errors"),
             (ConsoleFilter::Warnings, "Warnings"),
-        ] {
-            chips = chips.child(
-                button(SharedString::from(format!("cf-{name}")))
-                    .label(name)
-                    .xsmall()
-                    .ghost()
-                    .selected(filter == f)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(fc) = this.view_mut(w).and_then(|v| v.focus.as_mut()) {
-                            fc.console_filter = f;
-                        }
-                        cx.notify();
-                    })),
-            );
-        }
+        ];
+        let chips = div().px_2().py_1().child(
+            ButtonGroup::new("console-filter")
+                .xsmall()
+                .ghost()
+                .children(FILTERS.map(|(f, name)| {
+                    Button::new(SharedString::from(format!("cf-{name}")))
+                        .label(name)
+                        .selected(filter == f)
+                }))
+                .on_click(cx.listener(move |this, clicked: &Vec<usize>, _, cx| {
+                    if let (Some(fc), Some((f, _))) = (
+                        this.view_mut(w).and_then(|v| v.focus.as_mut()),
+                        clicked.first().and_then(|i| FILTERS.get(*i)),
+                    ) {
+                        fc.console_filter = *f;
+                    }
+                    cx.notify();
+                })),
+        );
         let count = rows.len();
         v_flex().size_full().child(chips).child(
             uniform_list(
