@@ -97,6 +97,8 @@ fn main() -> Result<()> {
 
     let startup = Rc::new(Cell::new(Some(startup)));
     gpui_kit::application().with_assets(AppAssets).run(move |cx| {
+        #[cfg(target_os = "macos")]
+        set_dock_icon();
         gpui_kit::init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
         {
@@ -219,6 +221,27 @@ async fn next_stop_signal() -> &'static str {
 async fn next_stop_signal() -> &'static str {
     let _ = tokio::signal::ctrl_c().await;
     "Ctrl+C"
+}
+
+/// macOS takes a Dock icon from the app bundle; a bare binary (started from
+/// a terminal, or by `Testudo.app`'s launcher, which runs the installed
+/// binary) gets the generic executable icon unless it sets its own.
+#[cfg(target_os = "macos")]
+fn set_dock_icon() {
+    use objc2::{AllocAnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let data = NSData::with_bytes(include_bytes!("../../../packaging/icons/testudo-512.png"));
+    let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
+        tracing::warn!("couldn't decode the Dock icon");
+        return;
+    };
+    // SAFETY: on the main thread (checked above), with a valid image.
+    unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image)) };
 }
 
 /// The working directory, or home when started at `/` (how macOS launches
