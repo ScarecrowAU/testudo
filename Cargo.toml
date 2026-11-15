@@ -28,6 +28,10 @@ smallvec = "1"
 futures = "0.3"
 rusqlite = { version = "0.42", features = ["bundled"] }
 libc = "0.2"
+# macOS Dock icon (crates/ui); already in the tree through gpui.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSImage"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData"] }
 # Optional OTLP export of Testudo's own traces and logs (TESTUDO_OTLP_ENDPOINT).
 opentelemetry = "0.33.1"
 opentelemetry_sdk = "0.33.1"

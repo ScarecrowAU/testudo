@@ -53,6 +53,8 @@ make install PREFIX=/usr/local   # system-wide (run with sudo)
 make uninstall                   # run history is kept
 ```
 
+On Linux this adds a desktop entry and icons. On macOS it adds `Testudo.app` to `~/Applications` (`MACAPPDIR=/Applications` for all users), so Spotlight, Launchpad and the Dock show Testudo with its icon; the app runs the installed `bin/testudo`, so updates apply to it. Started from a terminal, Testudo shows its icon in the Dock too.
+
 ffmpeg is optional, for MP4 export.
 
 ### Updates

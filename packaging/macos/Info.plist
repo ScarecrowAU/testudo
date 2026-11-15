@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Testudo.app for `make install` on macOS. @VERSION@ is filled in at install time. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Testudo</string>
+	<key>CFBundleDisplayName</key>
+	<string>Testudo</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.scarecrowau.testudo</string>
+	<key>CFBundleExecutable</key>
+	<string>testudo</string>
+	<key>CFBundleIconFile</key>
+	<string>Testudo</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+</dict>
+</plist>
