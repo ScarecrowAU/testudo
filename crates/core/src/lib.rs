@@ -6,6 +6,7 @@ pub mod hub;
 pub mod ingest;
 pub mod node_env;
 pub mod procs;
+pub mod project_config;
 pub mod runner;
 pub mod settings;
 pub mod shell_env;

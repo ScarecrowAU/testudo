@@ -24,6 +24,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::RunnerKind;
+use crate::project_config::{ProjectConfig, RunConfig};
 
 const MAX_DEPTH: usize = 8;
 const SKIP_DIRS: &[&str] = &[
@@ -88,6 +89,8 @@ pub struct Suite {
     pub problems: Vec<String>,
     /// Things likely to make it fail (e.g. browsers not installed).
     pub warnings: Vec<String>,
+    /// Extra env and args from the project config's matching rules.
+    pub run_config: RunConfig,
 }
 
 impl Suite {
@@ -177,11 +180,32 @@ pub fn discover(root: &Path) -> Vec<Suite> {
                 tool: None,
                 problems: vec!["Go test runner support is planned".into()],
                 warnings: vec![],
+                run_config: RunConfig::default(),
             });
         }
     }
+    apply_project_config(&root, &mut suites);
     tracing::Span::current().record("suites", suites.len());
     suites
+}
+
+/// Resolve the project config's rules for each runnable suite. A config that
+/// can't be read or a rule's missing `env_file` makes the affected suites
+/// unrunnable, with the reason, rather than running them without it.
+fn apply_project_config(root: &Path, suites: &mut [Suite]) {
+    let Some(config) = ProjectConfig::find(root) else {
+        return;
+    };
+    for suite in suites.iter_mut().filter(|s| s.kind.runner().is_some()) {
+        let resolved = match &config {
+            Ok(c) => c.resolve(suite.kind, &suite.dir),
+            Err(e) => Err(anyhow::anyhow!("{e:#}")),
+        };
+        match resolved {
+            Ok(rc) => suite.run_config = rc,
+            Err(e) => suite.problems.push(format!("{e:#}")),
+        }
+    }
 }
 
 fn node_suite(root: &Path, config: &Path, dir: &Path, kind: SuiteKind, variant: &str) -> Suite {
@@ -223,6 +247,7 @@ fn node_suite(root: &Path, config: &Path, dir: &Path, kind: SuiteKind, variant: 
         tool,
         problems,
         warnings,
+        run_config: RunConfig::default(),
     }
 }
 
@@ -487,6 +512,36 @@ mod tests {
         touch(&root, "vendor-clone/vitest.config.ts", "");
         let ids: Vec<String> = discover(&root).into_iter().map(|s| s.id).collect();
         assert_eq!(ids, ["apps/web/playwright.config.ts"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_config_rules_reach_suites() {
+        let root = std::env::temp_dir().join(format!("testudo-discover-cfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        touch(&root, "apps/web/playwright.config.ts", "");
+        fake_pkg(&root, "apps/web", "@playwright/test", "1.60.0", "playwright");
+        touch(&root, "apps/web/vitest.config.ts", "");
+        fake_pkg(&root, "apps/web", "vitest", "4.1.0", "vitest");
+        touch(
+            &root,
+            ".testudo/config.json",
+            "{ rules: [{ args: ['--g'] }, { path: 'apps/*', runner: 'vitest', env: { V: '1' }, args: ['--v'] }] }",
+        );
+        let suites = discover(&root);
+        let by_kind = |k: SuiteKind| suites.iter().find(|s| s.kind == k).unwrap();
+        let vitest = &by_kind(SuiteKind::Vitest).run_config;
+        assert_eq!(vitest.args, ["--g", "--v"]);
+        assert_eq!(vitest.env, [("V".to_owned(), "1".to_owned())]);
+        assert_eq!(by_kind(SuiteKind::Playwright).run_config.args, ["--g"]);
+
+        touch(&root, ".testudo/config.json", "{ rules: [{ runner: 'jest' }] }");
+        let suites = discover(&root);
+        assert!(
+            suites
+                .iter()
+                .all(|s| !s.runnable() && s.problems.iter().any(|p| p.contains("unknown runner")))
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
