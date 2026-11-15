@@ -92,9 +92,14 @@ jobs:
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           [ "$GITHUB_REF_NAME" = "v$version" ] || { echo "tag $GITHUB_REF_NAME, Cargo.toml $version"; exit 1; }
 
-      # Release profile so a tag's binary build below reuses this compile.
+      # Optimised (tests decode recorded frames), but without the release
+      # profile's LTO and single codegen unit, which only the shipped binaries
+      # need and which make every test binary slow to link.
       - name: Test
-        run: cargo test --workspace --locked --release
+        run: >-
+          cargo test --workspace --locked --release
+          --config 'profile.release.lto=false'
+          --config 'profile.release.codegen-units=16'
 
       - name: Build release binaries
         if: startsWith(github.ref, 'refs/tags/v')
