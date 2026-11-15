@@ -89,11 +89,21 @@ pub struct Suite {
     pub problems: Vec<String>,
     /// Things likely to make it fail (e.g. browsers not installed).
     pub warnings: Vec<String>,
-    /// Extra env and args from the project config's matching rules.
-    pub run_config: RunConfig,
+    /// The directory that was scanned; the project config is looked up from
+    /// here, as discovery did.
+    pub project_root: PathBuf,
 }
 
 impl Suite {
+    /// The project config's rules for this suite, read from disk now, so
+    /// edits to the config or an `env_file` apply without a rescan.
+    pub fn run_config(&self) -> anyhow::Result<RunConfig> {
+        match ProjectConfig::find(&self.project_root) {
+            None => Ok(RunConfig::default()),
+            Some(config) => config?.resolve(self.kind, &self.dir),
+        }
+    }
+
     pub fn runnable(&self) -> bool {
         self.problems.is_empty() && self.kind.runner().is_some()
     }
@@ -180,30 +190,32 @@ pub fn discover(root: &Path) -> Vec<Suite> {
                 tool: None,
                 problems: vec!["Go test runner support is planned".into()],
                 warnings: vec![],
-                run_config: RunConfig::default(),
+                project_root: root.clone(),
             });
         }
     }
-    apply_project_config(&root, &mut suites);
+    check_project_config(&root, &mut suites);
     tracing::Span::current().record("suites", suites.len());
     suites
 }
 
-/// Resolve the project config's rules for each runnable suite. A config that
-/// can't be read or a rule's missing `env_file` makes the affected suites
-/// unrunnable, with the reason, rather than running them without it.
-fn apply_project_config(root: &Path, suites: &mut [Suite]) {
+/// Check the project config against each runnable suite so mistakes show
+/// up in the suite list. Runs read the config again when they start
+/// (`Suite::run_config`), so these are warnings: fixing the file is enough,
+/// no rescan needed, and a run refuses to start while it is still broken.
+fn check_project_config(root: &Path, suites: &mut [Suite]) {
     let Some(config) = ProjectConfig::find(root) else {
         return;
     };
     for suite in suites.iter_mut().filter(|s| s.kind.runner().is_some()) {
-        let resolved = match &config {
-            Ok(c) => c.resolve(suite.kind, &suite.dir),
+        let checked = match &config {
+            Ok(c) => c.resolve(suite.kind, &suite.dir).map(drop),
             Err(e) => Err(anyhow::anyhow!("{e:#}")),
         };
-        match resolved {
-            Ok(rc) => suite.run_config = rc,
-            Err(e) => suite.problems.push(format!("{e:#}")),
+        if let Err(e) = checked {
+            suite
+                .warnings
+                .push(format!("{e:#} (runs won't start until it's fixed)"));
         }
     }
 }
@@ -247,7 +259,7 @@ fn node_suite(root: &Path, config: &Path, dir: &Path, kind: SuiteKind, variant: 
         tool,
         problems,
         warnings,
-        run_config: RunConfig::default(),
+        project_root: root.to_owned(),
     }
 }
 
@@ -516,7 +528,8 @@ mod tests {
     }
 
     #[test]
-    fn project_config_rules_reach_suites() {
+    fn project_config_is_read_when_a_run_starts() {
+        use crate::RunSpec;
         let root = std::env::temp_dir().join(format!("testudo-discover-cfg-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         touch(&root, "apps/web/playwright.config.ts", "");
@@ -529,19 +542,43 @@ mod tests {
             "{ rules: [{ args: ['--g'] }, { path: 'apps/*', runner: 'vitest', env: { V: '1' }, args: ['--v'] }] }",
         );
         let suites = discover(&root);
-        let by_kind = |k: SuiteKind| suites.iter().find(|s| s.kind == k).unwrap();
-        let vitest = &by_kind(SuiteKind::Vitest).run_config;
-        assert_eq!(vitest.args, ["--g", "--v"]);
+        let suite = |k: SuiteKind| suites.iter().find(|s| s.kind == k).unwrap();
+        let spec = |k: SuiteKind| RunSpec::for_suite(suite(k), vec!["--user".into()]);
+        let vitest = spec(SuiteKind::Vitest).unwrap();
+        assert_eq!(vitest.args, ["--g", "--v", "--user"]);
         assert_eq!(vitest.env, [("V".to_owned(), "1".to_owned())]);
-        assert_eq!(by_kind(SuiteKind::Playwright).run_config.args, ["--g"]);
+        assert_eq!(spec(SuiteKind::Playwright).unwrap().args, ["--g", "--user"]);
 
+        // Edited after the scan: the next run uses the new rules, env_file included.
+        touch(&root, "apps/web/.env.test", "FROM_FILE=yes\n");
+        touch(
+            &root,
+            ".testudo/config.json",
+            "{ rules: [{ path: 'apps/web', env_file: 'apps/web/.env.test', env: { V: '2' } }] }",
+        );
+        let vitest = spec(SuiteKind::Vitest).unwrap();
+        assert_eq!(vitest.args, ["--user"]);
+        assert_eq!(
+            vitest.env,
+            [
+                ("FROM_FILE".to_owned(), "yes".to_owned()),
+                ("V".to_owned(), "2".to_owned())
+            ]
+        );
+
+        // Broken: a warning in the list, suites stay runnable, but no run starts.
         touch(&root, ".testudo/config.json", "{ rules: [{ runner: 'jest' }] }");
         let suites = discover(&root);
         assert!(
             suites
                 .iter()
-                .all(|s| !s.runnable() && s.problems.iter().any(|p| p.contains("unknown runner")))
+                .all(|s| s.runnable() && s.warnings.iter().any(|w| w.contains("unknown runner")))
         );
+        let err = RunSpec::for_suite(&suites[0], vec![]).unwrap_err();
+        assert!(format!("{err:#}").contains("unknown runner"), "{err:#}");
+        // Fixed without a rescan: runs start again.
+        touch(&root, ".testudo/config.json", "{ rules: [] }");
+        assert!(RunSpec::for_suite(&suites[0], vec![]).is_ok());
         std::fs::remove_dir_all(root).unwrap();
     }
 

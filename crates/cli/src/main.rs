@@ -175,7 +175,13 @@ async fn run(args: &[String], data: &std::path::Path) -> Result<i32> {
             let specs: Vec<RunSpec> = chosen
                 .iter()
                 .filter(|s| s.runnable())
-                .filter_map(|s| RunSpec::for_suite(s, runner_args.clone()))
+                .filter_map(|s| match RunSpec::for_suite(s, runner_args.clone()) {
+                    Ok(spec) => Some(spec),
+                    Err(e) => {
+                        eprintln!("skipping {}: {e:#}", s.name);
+                        None
+                    }
+                })
                 .collect();
             if specs.is_empty() {
                 eprintln!("no runnable suites matched under {}", dir.display());
