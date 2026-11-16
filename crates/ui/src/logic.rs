@@ -348,6 +348,16 @@ pub fn fmt_dur(ms: f64) -> String {
 
 pub use testudo_core::tilde;
 
+/// Whether opening `dir` should skip the automatic suite scan: the home
+/// folder (where Testudo starts when launched from Finder or the Dock) and the
+/// filesystem root hold everything, so scanning them walks the whole disk.
+/// Scan still searches them when asked.
+pub fn skip_startup_scan(dir: &std::path::Path, home: Option<&std::path::Path>) -> bool {
+    let canon = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_owned());
+    let dir = canon(dir);
+    dir.parent().is_none() || home.is_some_and(|h| canon(h) == dir)
+}
+
 pub fn expand_tilde(p: &str) -> String {
     match (p.strip_prefix("~/"), std::env::var("HOME")) {
         (Some(rest), Ok(home)) => format!("{home}/{rest}"),
@@ -444,6 +454,20 @@ mod tests {
         assert_eq!(grid((1000.0, 900.0), (1280.0, 720.0), 6), (2, 3));
         // Three: never more cells than needed per row.
         assert_eq!(grid((900.0, 900.0), (1280.0, 720.0), 3), (1, 3));
+    }
+
+    #[test]
+    fn startup_scan_skips_home_and_root_only() {
+        let home = std::env::temp_dir().join(format!("testudo-home-{}", std::process::id()));
+        let project = home.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        assert!(skip_startup_scan(&home, Some(&home)));
+        // The same folder through a trailing `.` still counts as home.
+        assert!(skip_startup_scan(&home.join("."), Some(&home)));
+        assert!(skip_startup_scan(std::path::Path::new("/"), Some(&home)));
+        assert!(!skip_startup_scan(&project, Some(&home)));
+        assert!(!skip_startup_scan(&project, None));
+        std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]

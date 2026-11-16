@@ -37,8 +37,8 @@ use testudo_store::{RunRow, Store};
 use crate::bridge::UiMsg;
 use crate::logic::{
     PaneGrid, REPEAT_THRESHOLD, RowState, Tone, expand_tilde, fmt_ago, fmt_dur, fmt_secs, fmt_time, looks_like_failure,
-    ordered_pages, pane_grid, pane_name, rerun_args, row_state, status_icon, status_label, summary_line, test_order,
-    tilde, truncate, url_path,
+    ordered_pages, pane_grid, pane_name, rerun_args, row_state, skip_startup_scan, status_icon, status_label,
+    summary_line, test_order, tilde, truncate, url_path,
 };
 use crate::model::{Model, Page, PageKey, Source};
 use crate::state::{InspectorTab, PageFocus, PagesView, Replay, Retired, StreamFilter};
@@ -262,7 +262,14 @@ impl TestudoApp {
         app._subscriptions.extend(tables);
         let _ = s.rt.take();
         app.refresh_history();
-        app.scan(window, cx);
+        // Opening in the home folder (a Finder or Dock launch) or at `/` would
+        // walk the whole disk: wait for a project folder or a Scan instead.
+        let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
+        if skip_startup_scan(&dir, home.as_deref()) {
+            tracing::info!(dir = %dir.display(), "not scanning the home folder at startup");
+        } else {
+            app.scan(window, cx);
+        }
         app.start_update_checks(cx);
         if let Some(filter) = s.autorun.as_deref() {
             app.autorun(filter, cx);
@@ -460,7 +467,7 @@ impl TestudoApp {
         let dir = if typed.is_dir() {
             self.resolve_worktree(&typed, window, cx)
         } else {
-            typed
+            typed.clone()
         };
         if !dir.is_dir() {
             self.suites.clear();
@@ -481,7 +488,22 @@ impl TestudoApp {
         self.suites = discover(&dir);
         self.scanned = Some(dir);
         self.error = None;
+        self.remember_project(&typed);
         cx.notify();
+    }
+
+    /// Record `dir` as the folder to reopen next time (not the home folder
+    /// or `/`, which open without scanning anyway).
+    fn remember_project(&mut self, dir: &std::path::Path) {
+        let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
+        let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_owned());
+        if skip_startup_scan(&dir, home.as_deref()) || self.settings.last_project_dir.as_ref() == Some(&dir) {
+            return;
+        }
+        self.settings.last_project_dir = Some(dir);
+        if let Err(e) = self.settings.save() {
+            tracing::warn!("could not save the last project folder: {e:#}");
+        }
     }
 
     /// The directory to scan for `typed`: itself outside a repository with
@@ -1395,7 +1417,14 @@ impl TestudoApp {
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(format!("Suites ({runnable})")),
         );
-        if self.scanned.is_some() && self.suites.is_empty() {
+        if self.scanned.is_none() && self.error.is_none() {
+            col = col.child(
+                div()
+                    .text_sm()
+                    .text_color(muted)
+                    .child("Choose a project folder, or press Scan to search this one."),
+            );
+        } else if self.scanned.is_some() && self.suites.is_empty() {
             col = col.child(
                 div()
                     .text_sm()

@@ -48,7 +48,12 @@ fn main() -> Result<()> {
             _ => startup.project_dir = Some(PathBuf::from(arg)),
         }
     }
-    let project_dir = startup.project_dir.clone().unwrap_or_else(default_project_dir);
+    // Loaded before the project folder is picked: it remembers the last one.
+    let settings = testudo_core::settings::Settings::load();
+    let project_dir = startup
+        .project_dir
+        .clone()
+        .unwrap_or_else(|| default_project_dir(settings.last_project_dir.as_deref()));
     startup.project_dir = Some(project_dir);
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
@@ -69,7 +74,6 @@ fn main() -> Result<()> {
         IngestServer::bind(hub.clone())?
     };
     let orchestrator = Orchestrator::new(&ingest, hub.clone(), adapters_dir(), rt.handle().clone());
-    let settings = testudo_core::settings::Settings::load();
     orchestrator.set_recording(&settings);
     startup.settings = settings;
     tracing::info!(socket = %ingest.socket_path().display(), adapters = %adapters_dir().display(), imported_shell_vars = imported, "testudo ready");
@@ -248,15 +252,18 @@ fn set_dock_icon() {
     unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image)) };
 }
 
-/// The working directory, or home when started at `/` (how macOS launches
-/// apps from Finder and the Dock), so startup never scans the whole disk.
-fn default_project_dir() -> PathBuf {
+/// The folder to open when none is given: the working directory, unless that
+/// is the home folder or `/` (how macOS launches apps from Finder and the
+/// Dock). Then the last project scanned when it still exists, otherwise home,
+/// which the app opens without scanning.
+fn default_project_dir(last: Option<&std::path::Path>) -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_default();
-    if cwd.parent().is_some() {
+    let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
+    if !logic::skip_startup_scan(&cwd, home.as_deref()) {
         return cwd;
     }
-    std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or(cwd)
+    if let Some(last) = last.filter(|p| p.is_dir()) {
+        return last.to_owned();
+    }
+    home.unwrap_or(cwd)
 }

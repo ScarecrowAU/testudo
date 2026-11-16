@@ -55,6 +55,9 @@ pub struct Settings {
     /// Look for a newer Testudo at startup and once a day.
     pub check_updates: bool,
     pub update_channel: UpdateChannel,
+    /// The last project folder scanned. The GUI reopens it when started
+    /// without a folder from the home folder or `/` (Finder, the Dock).
+    pub last_project_dir: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -65,6 +68,7 @@ impl Default for Settings {
             recordings_dir: None,
             check_updates: true,
             update_channel: UpdateChannel::Stable,
+            last_project_dir: None,
         }
     }
 }
@@ -139,6 +143,7 @@ mod tests {
             recordings_dir: Some("/data/rec".into()),
             check_updates: false,
             update_channel: UpdateChannel::BleedingEdge,
+            last_project_dir: Some("/work/app".into()),
         };
         s.save_to(&file).unwrap();
         assert_eq!(Settings::load_from(&file), s);
