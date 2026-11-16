@@ -6845,7 +6845,7 @@ dependencies = [
 
 [[package]]
 name = "testudo-cli"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -6860,7 +6860,7 @@ dependencies = [
 
 [[package]]
 name = "testudo-core"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "bytes",
@@ -6878,14 +6878,14 @@ dependencies = [
 
 [[package]]
 name = "testudo-dev"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "testudo-protocol"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "serde",
@@ -6894,7 +6894,7 @@ dependencies = [
 
 [[package]]
 name = "testudo-store"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "image",
@@ -6908,7 +6908,7 @@ dependencies = [
 
 [[package]]
 name = "testudo-ui"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "bytes",
@@ -6936,7 +6936,7 @@ dependencies = [
 
 [[package]]
 name = "testudo-update"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "flate2",
