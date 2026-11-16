@@ -232,6 +232,33 @@ pub fn best_grid(area: (f32, f32), frame: (f32, f32), n: usize, header: f32, gap
     best.0
 }
 
+/// How the page panes are laid out: `cols` across, `rows` in all, each
+/// `tile_h` px tall. Rows past the panel's height scroll.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PaneGrid {
+    pub cols: usize,
+    pub rows: usize,
+    pub tile_h: f32,
+}
+
+/// Grid for `n` page panes in an `area` (w, h), panes `gap` px apart. Panes
+/// never shrink below `min` (w, h): as many fit as the space allows (wider
+/// rows first), the rest go in rows below the fold. While everything fits,
+/// the panes fill the height, as before.
+pub fn pane_grid(area: (f32, f32), n: usize, min: (f32, f32), gap: f32) -> PaneGrid {
+    let n = n.max(1);
+    let fit = |len: f32, min: f32| (((len + gap) / (min + gap)).floor() as usize).max(1);
+    let (max_cols, max_rows) = (fit(area.0, min.0), fit(area.1, min.1));
+    let mut cols = ((n as f32).sqrt().ceil() as usize).clamp(1, max_cols);
+    while n.div_ceil(cols) > max_rows && cols < max_cols.min(n) {
+        cols += 1;
+    }
+    let rows = n.div_ceil(cols);
+    let shown = rows.min(max_rows);
+    let tile_h = ((area.1 - gap * (shown - 1) as f32) / shown as f32).max(min.1);
+    PaneGrid { cols, rows, tile_h }
+}
+
 /// Chronological number (1 = oldest) of the earlier run at `i` in a
 /// newest-first list of `total`: the one just before this run is `total`.
 pub fn run_number(i: usize, total: usize) -> usize {
@@ -417,6 +444,26 @@ mod tests {
         assert_eq!(grid((1000.0, 900.0), (1280.0, 720.0), 6), (2, 3));
         // Three: never more cells than needed per row.
         assert_eq!(grid((900.0, 900.0), (1280.0, 720.0), 3), (1, 3));
+    }
+
+    #[test]
+    fn page_panes_stop_shrinking_and_scroll() {
+        let grid = |area, n| {
+            let g = pane_grid(area, n, (260.0, 200.0), 8.0);
+            (g.cols, g.rows, g.tile_h)
+        };
+        // Few panes: the usual square-ish grid, filling the height.
+        assert_eq!(grid((1000.0, 800.0), 4), (2, 2, 396.0));
+        assert_eq!(grid((1000.0, 800.0), 1), (1, 1, 800.0));
+        // Many panes: at most 3 across (3×260 + 2×8 ≤ 1000) and 3 rows tall
+        // (3×200 + 2×8 ≤ 800); the rest scroll, visible rows fill the height.
+        let many = grid((1000.0, 800.0), 30);
+        assert_eq!((many.0, many.1), (3, 10));
+        assert!((many.2 - (800.0 - 16.0) / 3.0).abs() < 0.01);
+        // Wide and short: use the width before scrolling.
+        assert_eq!(grid((2000.0, 300.0), 6), (6, 1, 300.0));
+        // Not measured yet (or tiny): one column at the minimum size.
+        assert_eq!(grid((0.0, 0.0), 5), (1, 5, 200.0));
     }
 
     #[test]
