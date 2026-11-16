@@ -879,7 +879,7 @@ impl TestudoApp {
                 .into_any_element();
         }
         let count = steps.len();
-        uniform_list(
+        let list = uniform_list(
             "focus-steps",
             count,
             cx.processor(move |_this, range: std::ops::Range<usize>, _, cx| {
@@ -942,7 +942,13 @@ impl TestudoApp {
         )
         .track_scroll(&self.steps_scroll)
         .size_full()
-        .into_any_element()
+        .pr(px(super::SCROLLBAR_GUTTER));
+        div()
+            .relative()
+            .size_full()
+            .child(list)
+            .vertical_scrollbar(&self.steps_scroll)
+            .into_any_element()
     }
 
     #[allow(clippy::too_many_arguments)]

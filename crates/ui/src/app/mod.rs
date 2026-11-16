@@ -15,6 +15,7 @@ use gpui_kit::component::button::{Button, ButtonGroup, ButtonRounded, ButtonVari
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::separator::Separator;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::table::{DataTable, TableState};
@@ -35,9 +36,9 @@ use testudo_store::{RunRow, Store};
 
 use crate::bridge::UiMsg;
 use crate::logic::{
-    REPEAT_THRESHOLD, RowState, Tone, expand_tilde, fmt_ago, fmt_dur, fmt_secs, fmt_time, looks_like_failure,
-    ordered_pages, pane_name, rerun_args, row_state, status_icon, status_label, summary_line, test_order, tilde,
-    truncate, url_path,
+    PaneGrid, REPEAT_THRESHOLD, RowState, Tone, expand_tilde, fmt_ago, fmt_dur, fmt_secs, fmt_time, looks_like_failure,
+    ordered_pages, pane_grid, pane_name, rerun_args, row_state, status_icon, status_label, summary_line, test_order,
+    tilde, truncate, url_path,
 };
 use crate::model::{Model, Page, PageKey, Source};
 use crate::state::{InspectorTab, PageFocus, PagesView, Replay, Retired, StreamFilter};
@@ -135,7 +136,8 @@ pub struct TestudoApp {
     last_render: Instant,
     perf: crate::perf::Perf,
     /// Scroll position of the run list (live sidebar / History tests).
-    run_scroll: UniformListScrollHandle,
+    /// One per view (live, replay), so each run list keeps its own position.
+    run_scroll: [UniformListScrollHandle; 2],
     #[cfg(debug_assertions)]
     started_at: Instant,
     focus_handle: FocusHandle,
@@ -143,6 +145,9 @@ pub struct TestudoApp {
     /// Size of the comparison area at the last layout, and the grid
     /// (columns, rows) it was laid out with (see focus.rs).
     compare_area: Rc<Cell<CompareArea>>,
+    /// Size of each page grid (live, replay) at the last layout, and the
+    /// grid it was laid out with.
+    pages_area: [Rc<Cell<PagesArea>>; 2],
     timeline_scrub: Rc<Cell<Bounds<Pixels>>>,
     /// Test span under the mouse on the replay timeline.
     timeline_hover: Option<usize>,
@@ -238,12 +243,13 @@ impl TestudoApp {
             retired: Vec::new(),
             last_render: Instant::now(),
             perf: Default::default(),
-            run_scroll: UniformListScrollHandle::new(),
+            run_scroll: [UniformListScrollHandle::new(), UniformListScrollHandle::new()],
             #[cfg(debug_assertions)]
             started_at: Instant::now(),
             focus_handle: cx.focus_handle(),
             focus_scrub: Rc::new(Cell::new(Bounds::default())),
             compare_area: Rc::new(Cell::new((Bounds::default(), (2, 1)))),
+            pages_area: Default::default(),
             timeline_scrub: Rc::new(Cell::new(Bounds::default())),
             timeline_hover: None,
             net_table: tables::NetTable::state(window, cx),
@@ -791,7 +797,7 @@ impl TestudoApp {
             }
             return;
         }
-        let handle = self.run_scroll.0.borrow().base_handle.clone();
+        let handle = self.run_scroll[Which::Live as usize].0.borrow().base_handle.clone();
         let max = f32::from(handle.max_offset().y).max(1.0);
         let travel = (t - 4.0) * 1200.0;
         let y = travel % (2.0 * max);
@@ -1109,6 +1115,16 @@ fn button(id: impl Into<ElementId>) -> Button {
 /// The comparison area's bounds at the last layout and the grid (columns,
 /// rows) it was laid out with.
 type CompareArea = (Bounds<Pixels>, (usize, usize));
+type PagesArea = (Bounds<Pixels>, Option<PaneGrid>);
+
+/// Smallest a page pane gets (label bar included) before the grid scrolls:
+/// about a 104px-tall frame under the 46px label bar, still recognisable,
+/// so a typical panel shows a 4×3 grid before scrolling.
+const PANE_MIN: (f32, f32) = (200., 150.);
+
+/// Room kept free at the right of every scroll area for its scrollbar
+/// (gpui-kit draws a 16px track over the content), so it never covers rows.
+pub(super) const SCROLLBAR_GUTTER: f32 = 16.;
 
 /// Height of a page tile's title/URL bar; the frame fits above it.
 const TILE_LABEL_H: f32 = 46.;
@@ -1317,23 +1333,29 @@ impl TestudoApp {
 
     fn render_live(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Suites scroll on their own; the run list is virtualized below them.
+        // No trailing padding: scroll areas reach the panel's edge and keep
+        // a scrollbar gutter instead; other rows inset themselves (pr_2).
         let sidebar = v_flex()
             .size_full()
-            .p_2()
+            .py_2()
+            .pl_2()
             .gap_1()
             .child(
                 div()
                     .id("live-suites")
                     .flex_none()
                     .max_h(relative(0.45))
-                    .overflow_y_scroll()
-                    .child(self.render_suites(cx)),
+                    .h_auto()
+                    .pr(px(SCROLLBAR_GUTTER))
+                    .child(self.render_suites(cx))
+                    .overflow_y_scrollbar(),
             )
-            .child(Separator::horizontal().my_1())
+            .child(Separator::horizontal().my_1().mr_2())
             .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child("Runs"))
             .when(self.live.model.runs.is_empty(), |d| {
                 d.child(
                     div()
+                        .pr_2()
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
                         .child("No runs yet. Press ▶ on a suite."),
@@ -1451,8 +1473,14 @@ impl TestudoApp {
                 range.map(|i| this.render_run_row(w, &rows[i], cx)).collect::<Vec<_>>()
             }),
         )
-        .track_scroll(&self.run_scroll)
-        .size_full();
+        .track_scroll(&self.run_scroll[w as usize])
+        .size_full()
+        .pr(px(SCROLLBAR_GUTTER));
+        let list = div()
+            .relative()
+            .size_full()
+            .child(list)
+            .vertical_scrollbar(&self.run_scroll[w as usize]);
         let errors = self.error_panel(w, cx);
         v_flex()
             .flex_1()
@@ -1497,9 +1525,12 @@ impl TestudoApp {
             .id(("error-panel", w as usize))
             .flex_none()
             .max_h(relative(0.5))
-            .overflow_y_scroll()
+            .h_auto()
             .gap_2()
             .p_2()
+            // The card ends where the run rows do; its scrollbar sits in the
+            // same trailing gutter lane as the run list's.
+            .mr(px(SCROLLBAR_GUTTER))
             .rounded_md()
             .bg(theme.red.opacity(0.06))
             .border_1()
@@ -1540,7 +1571,12 @@ impl TestudoApp {
                     ),
             );
         }
-        Some(panel.into_any_element())
+        Some(
+            panel
+                .overflow_y_scrollbar()
+                .id(("error-panel-scroll", w as usize))
+                .into_any_element(),
+        )
     }
 
     /// A run-list row, with the selected run (its output is in the Output tab)
@@ -1820,7 +1856,7 @@ impl TestudoApp {
 
     // --- pages ----------------------------------------------------------------
 
-    fn render_pages(&mut self, w: Which, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_pages(&mut self, w: Which, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(view) = self.view(w) else {
             return div().into_any_element();
         };
@@ -1840,12 +1876,44 @@ impl TestudoApp {
                 .child(hint)
                 .into_any_element();
         }
-        let cols = (pages.len() as f32).sqrt().ceil().max(1.0) as u16;
-        let rows = (pages.len() as u16).div_ceil(cols).max(1);
+        // Lay out for the panel's size at the last paint; the canvas below
+        // re-renders when that size changes the grid. The space panes get is
+        // the panel less its padding (pl_2/py_2) and the scrollbar gutter;
+        // panes are gap_2 apart. Both are 0.5rem, so they follow rem size.
+        let n = pages.len();
+        let grid_for = move |panel: Bounds<Pixels>, window: &Window| {
+            let space = f32::from(window.rem_size()) * 0.5;
+            pane_grid(
+                (
+                    f32::from(panel.size.width) - space - SCROLLBAR_GUTTER,
+                    f32::from(panel.size.height) - 2. * space,
+                ),
+                n,
+                PANE_MIN,
+                space,
+            )
+        };
+        let area_cell = self.pages_area[w as usize].clone();
+        let (area, _) = area_cell.get();
+        let layout = grid_for(area, window);
+        area_cell.set((area, Some(layout)));
+        let measure = canvas(
+            move |bounds, window, _| {
+                let (_, laid_out) = area_cell.get();
+                let now = grid_for(bounds, window);
+                area_cell.set((bounds, laid_out));
+                if laid_out != Some(now) {
+                    window.refresh();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0();
         let selected = view.selected_page.clone();
-        let mut grid = div().size_full().p_2().gap_2().grid().grid_cols(cols).grid_rows(rows);
+        let mut cells = Vec::with_capacity(n);
         let theme = cx.theme().clone();
-        for (i, page) in pages.into_iter().enumerate() {
+        for page in pages {
             let test = view.model.test_for_page(page);
             let status = test.and_then(|t| t.status);
             let (_, tn) = status_icon(status);
@@ -1865,10 +1933,14 @@ impl TestudoApp {
                 (None, true) => ("Closed", muted),
                 _ => (status_label(status), tone(tn, cx)),
             };
-            grid = grid.child(
+            cells.push(
                 div()
-                    .id(("pane", i))
+                    // Keyed by page, not position: panes reorder as tests finish.
+                    .id(ElementId::Name(
+                        format!("pane-{}-{}", page.key.run_id, page.key.page_id).into(),
+                    ))
                     .relative()
+                    .flex_1()
                     .min_h_0()
                     .min_w_0()
                     .overflow_hidden()
@@ -1951,7 +2023,39 @@ impl TestudoApp {
                     .on_click(cx.listener(move |this, _, window, cx| this.open_focus(w, key.clone(), window, cx))),
             );
         }
-        grid.into_any_element()
+        // Fixed-height rows, so panes stop shrinking once the panel is full
+        // and the rest (finished pages: live ones sort first) scroll.
+        let mut rows = v_flex().gap_2();
+        let mut it = cells.into_iter().peekable();
+        while it.peek().is_some() {
+            let mut row = h_flex().items_stretch().flex_none().h(px(layout.tile_h)).gap_2();
+            for _ in 0..layout.cols {
+                row = match it.next() {
+                    Some(cell) => row.child(cell),
+                    None => row.child(div().flex_1()),
+                };
+            }
+            rows = rows.child(row);
+        }
+        // The scroll area owns the whole panel, so its scrollbar sits against
+        // the panel's edge; the padding and gutter are inside it.
+        div()
+            .relative()
+            .size_full()
+            .child(measure)
+            .child(
+                div().absolute().inset_0().child(
+                    div()
+                        .size_full()
+                        .pl_2()
+                        .py_2()
+                        .pr(px(SCROLLBAR_GUTTER))
+                        .child(rows)
+                        .overflow_y_scrollbar()
+                        .id(("pages-scroll", w as usize)),
+                ),
+            )
+            .into_any_element()
     }
 
     // --- inspector ------------------------------------------------------------
@@ -2254,7 +2358,14 @@ impl TestudoApp {
                 .collect()
         })
         .track_scroll(&self.output_scroll)
-        .flex_1();
+        .size_full()
+        .pr(px(SCROLLBAR_GUTTER));
+        let list = div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .child(list)
+            .vertical_scrollbar(&self.output_scroll);
 
         v_flex().size_full().child(toolbar).child(list)
     }
@@ -2367,12 +2478,15 @@ impl TestudoApp {
                     })),
             );
         }
+        // As in the live sidebar: scroll areas reach the trailing edge.
         let sidebar = v_flex()
             .size_full()
-            .p_2()
+            .py_2()
+            .pl_2()
             .gap_1()
             .child(
                 h_flex()
+                    .pr_2()
                     .gap_2()
                     .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child("History"))
                     .child(
@@ -2387,23 +2501,28 @@ impl TestudoApp {
                             })),
                     ),
             )
-            .children(
-                self.store
-                    .as_ref()
-                    .map(|s| div().text_xs().text_color(muted).truncate().child(tilde(s.dir()))),
-            )
-            .child(self.render_history_summary(cx))
+            .children(self.store.as_ref().map(|s| {
+                div()
+                    .pr_2()
+                    .text_xs()
+                    .text_color(muted)
+                    .truncate()
+                    .child(tilde(s.dir()))
+            }))
+            .child(div().pr_2().child(self.render_history_summary(cx)))
             .child(
                 div()
                     .id("hist-list")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
+                    .pr(px(SCROLLBAR_GUTTER))
                     .on_scroll(cx.listener(|this, _: &ScrollEvent, _, _| this.perf.input("history_list")))
-                    .child(list),
+                    .child(list)
+                    .overflow_y_scrollbar(),
             )
             .when(self.replay.is_some(), |d| {
-                d.child(Separator::horizontal()).child(self.run_list(Which::Replay, cx))
+                d.child(Separator::horizontal().mr_2())
+                    .child(self.run_list(Which::Replay, cx))
             });
 
         let replay_focus = self.replay.as_ref().is_some_and(|r| r.view.focus.is_some());

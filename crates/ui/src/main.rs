@@ -106,6 +106,10 @@ fn main() -> Result<()> {
             theme.font_family = fonts::sans();
             theme.mono_font_family = fonts::mono();
         }
+        // Every scroll area shows its scrollbar whenever it has more to
+        // scroll (gpui-kit's default only shows it while scrolling). Set
+        // through the theme so it reaches the base layer that draws them.
+        Theme::set_scrollbar_mode(gpui_kit::component::scroll::ScrollbarMode::Always, cx);
         app::bind_keys(cx);
 
         let options = WindowOptions {
