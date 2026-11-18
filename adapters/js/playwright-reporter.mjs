@@ -67,6 +67,22 @@ export default class TestudoPlaywrightReporter {
     });
   }
 
+  // Output printed while a test runs (console.log in the test, API logs):
+  // its tile in Testudo shows it. Output outside a test stays run-level.
+  onStdOut(chunk, test) {
+    this.output(chunk, test, 'stdout');
+  }
+
+  onStdErr(chunk, test) {
+    this.output(chunk, test, 'stderr');
+  }
+
+  output(chunk, test, stream) {
+    if (!test) return;
+    const text = plain(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
+    if (text) this.t.send({ type: 'testOutput', testId: test.id, stream, text });
+  }
+
   onTestEnd(test, result) {
     // test.skip(condition, reason) records the reason as a 'skip' annotation.
     const skip = [...(result.annotations ?? []), ...(test.annotations ?? [])].find(

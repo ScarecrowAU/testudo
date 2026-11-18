@@ -3,7 +3,7 @@
 
 use testudo_protocol::TestStatus;
 
-use crate::model::{Model, Page, Test};
+use crate::model::{Model, Page, PageKey, Source, Test};
 
 /// Pane ordering groups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -46,15 +46,135 @@ pub fn test_order(t: &Test) -> (u8, String) {
     (group, t.title.to_lowercase())
 }
 
-/// Pages in display order: running, failed, complete; by name (case-insensitive)
-/// within a group, page id as a stable tiebreak.
-pub fn ordered_pages(model: &Model) -> Vec<&Page> {
-    let mut pages: Vec<&Page> = model.pages.values().collect();
-    pages.sort_by_cached_key(|p| {
-        let state = pane_state(p, model.test_for_page(p));
-        (state, pane_name(model, p).to_lowercase(), p.key.page_id.clone())
-    });
-    pages
+/// A running test that hasn't opened a page this long after starting is
+/// shown as a terminal tile (most browser tests open one well within it).
+pub const TERMINAL_GRACE_MS: f64 = 1000.0;
+
+/// One tile of the page grid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Tile {
+    /// A browser page.
+    Page(PageKey),
+    /// A test without a page (API tests, setup, plain Vitest), shown as its
+    /// terminal output. Indexes into `model.runs` and that run's tests.
+    Terminal { run: usize, test: usize },
+}
+
+/// What the page grid shows.
+#[derive(Debug, Default)]
+pub struct GridTiles {
+    pub tiles: Vec<Tile>,
+    /// Completed tiles left out by "Hide completed".
+    pub hidden: usize,
+    /// A running test may still open a page: look again shortly.
+    pub waiting: bool,
+}
+
+fn test_state(t: &Test) -> PaneState {
+    match t.status {
+        None => PaneState::Running,
+        Some(TestStatus::Failed | TestStatus::TimedOut) => PaneState::Failed,
+        Some(_) => PaneState::Complete,
+    }
+}
+
+/// The grid's tiles at time `now`: pages and page-less tests of `run` (every
+/// run when None), running first, then failed, then complete, by name within
+/// each. `hide_completed` leaves out completed ones (failures stay).
+pub fn grid_tiles(model: &Model, run: Option<&str>, hide_completed: bool, now: f64) -> GridTiles {
+    let in_run = |id: &str| run.is_none_or(|r| r == id);
+    let mut keyed: Vec<((PaneState, String, u8, String), Tile)> = model
+        .pages
+        .values()
+        .filter(|p| in_run(&p.key.run_id))
+        .map(|p| {
+            let key = (
+                pane_state(p, model.test_for_page(p)),
+                pane_name(model, p).to_lowercase(),
+                0,
+                p.key.page_id.clone(),
+            );
+            (key, Tile::Page(p.key.clone()))
+        })
+        .collect();
+    let mut waiting = false;
+    for (ri, r) in model.runs.iter().enumerate().filter(|(_, r)| in_run(&r.id)) {
+        let pages: Vec<&Page> = model.pages.values().filter(|p| p.key.run_id == r.id).collect();
+        // Vitest browser mode runs every test in one shared page: that page
+        // is their visual output.
+        if r.runner == "vitest" && pages.iter().any(|p| p.test_id.is_none()) {
+            continue;
+        }
+        for (ti, t) in r.tests.iter().enumerate() {
+            if t.queued || pages.iter().any(|p| p.test_id.as_deref() == Some(t.id.as_str())) {
+                continue;
+            }
+            if t.status.is_none() && t.started_at.is_none_or(|s| now - s < TERMINAL_GRACE_MS) {
+                waiting = true;
+                continue;
+            }
+            let key = (test_state(t), t.title.to_lowercase(), 1, t.id.clone());
+            keyed.push((key, Tile::Terminal { run: ri, test: ti }));
+        }
+    }
+    let total = keyed.len();
+    if hide_completed {
+        keyed.retain(|(k, _)| k.0 != PaneState::Complete);
+    }
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    GridTiles {
+        hidden: total - keyed.len(),
+        tiles: keyed.into_iter().map(|(_, t)| t).collect(),
+        waiting,
+    }
+}
+
+/// How a terminal tile line is coloured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TermKind {
+    Stdout,
+    Stderr,
+    Step,
+    StepFailed,
+    Error,
+    Note,
+}
+
+/// The last `max` lines of a page-less test's terminal tile: what it printed
+/// (else its steps), then its skip reason or error.
+pub fn terminal_lines(t: &Test, max: usize) -> Vec<(TermKind, String)> {
+    let mut lines: Vec<(TermKind, String)> = if t.output.is_empty() {
+        t.steps
+            .iter()
+            .map(|s| match s.error {
+                Some(_) => (TermKind::StepFailed, format!("✘ {}", s.title)),
+                None => (TermKind::Step, format!("› {}", s.title)),
+            })
+            .collect()
+    } else {
+        t.output
+            .iter()
+            .map(|l| {
+                let kind = match l.source {
+                    Source::Stderr => TermKind::Stderr,
+                    _ => TermKind::Stdout,
+                };
+                (kind, l.text.clone())
+            })
+            .collect()
+    };
+    if let Some(note) = t.note.as_deref().filter(|_| t.status == Some(TestStatus::Skipped)) {
+        lines.push((TermKind::Note, format!("skipped: {}", summary_line(note))));
+    }
+    if let Some(error) = &t.error {
+        lines.extend(error.lines().map(|l| (TermKind::Error, l.to_owned())));
+    }
+    if lines.is_empty() {
+        let note = if t.status.is_none() { "running…" } else { "no output" };
+        lines.push((TermKind::Note, note.to_owned()));
+    }
+    let skip = lines.len().saturating_sub(max);
+    lines.split_off(skip)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -584,7 +704,165 @@ mod tests {
         for (i, e) in events.into_iter().enumerate() {
             m.apply("r1", i as f64, e);
         }
-        let order: Vec<&str> = ordered_pages(&m).iter().map(|p| p.key.page_id.as_str()).collect();
-        assert_eq!(order, ["p3", "p5", "p2", "p6", "p4", "p1"]);
+        let page_ids = |g: GridTiles| -> Vec<String> {
+            g.tiles
+                .into_iter()
+                .map(|t| match t {
+                    Tile::Page(k) => k.page_id,
+                    Tile::Terminal { .. } => panic!("every test has a page"),
+                })
+                .collect()
+        };
+        assert_eq!(
+            page_ids(grid_tiles(&m, None, false, 100.0)),
+            ["p3", "p5", "p2", "p6", "p4", "p1"]
+        );
+        // Hide completed keeps running and failed tiles.
+        let shown = grid_tiles(&m, Some("r1"), true, 100.0);
+        assert_eq!(shown.hidden, 2);
+        assert_eq!(page_ids(shown), ["p3", "p5", "p2", "p6"]);
+        assert!(grid_tiles(&m, Some("other"), false, 100.0).tiles.is_empty());
+    }
+
+    fn begin(id: &str) -> Event {
+        Event::TestBegin {
+            test_id: id.into(),
+            title: id.into(),
+            title_path: vec![],
+            file: None,
+            line: None,
+            project: None,
+            worker_index: None,
+        }
+    }
+
+    fn end(id: &str, status: TestStatus, error: Option<&str>) -> Event {
+        Event::TestEnd {
+            test_id: id.into(),
+            status,
+            duration_ms: None,
+            error: error.map(Into::into),
+            note: None,
+        }
+    }
+
+    #[test]
+    fn tests_without_pages_get_terminal_tiles() {
+        let mut m = Model::new();
+        m.apply(
+            "r1",
+            0.0,
+            Event::RunStarted {
+                label: "r1".into(),
+                runner: "playwright".into(),
+                cwd: "/p".into(),
+                args: vec![],
+            },
+        );
+        m.apply("r1", 0.0, begin("api"));
+        m.apply("r1", 0.0, begin("ui"));
+        m.apply("r1", 0.0, begin("slow"));
+        m.apply(
+            "r1",
+            10.0,
+            Event::PageOpened {
+                page_id: "p1".into(),
+                test_id: Some("ui".into()),
+                worker_index: None,
+                browser: None,
+                url: None,
+            },
+        );
+        m.apply("r1", 20.0, end("api", TestStatus::Passed, None));
+        // Before the grace period a running test may still open a page.
+        let early = grid_tiles(&m, None, false, 500.0);
+        assert!(early.waiting);
+        assert_eq!(early.tiles.len(), 2, "page and finished api test");
+        let later = grid_tiles(&m, None, false, TERMINAL_GRACE_MS + 1.0);
+        assert!(!later.waiting);
+        assert_eq!(
+            later.tiles,
+            [
+                Tile::Terminal { run: 0, test: 2 },
+                Tile::Page(PageKey {
+                    run_id: "r1".into(),
+                    page_id: "p1".into()
+                }),
+                Tile::Terminal { run: 0, test: 0 },
+            ],
+            "running first (by name), then complete"
+        );
+    }
+
+    #[test]
+    fn vitest_browser_mode_has_no_terminal_tiles() {
+        let mut m = Model::new();
+        m.apply(
+            "r1",
+            0.0,
+            Event::RunStarted {
+                label: "r1".into(),
+                runner: "vitest".into(),
+                cwd: "/p".into(),
+                args: vec![],
+            },
+        );
+        m.apply(
+            "r1",
+            0.0,
+            Event::PageOpened {
+                page_id: "shared".into(),
+                test_id: None,
+                worker_index: None,
+                browser: None,
+                url: None,
+            },
+        );
+        m.apply("r1", 1.0, begin("t1"));
+        m.apply("r1", 2.0, end("t1", TestStatus::Passed, None));
+        assert_eq!(grid_tiles(&m, None, false, 10_000.0).tiles.len(), 1);
+    }
+
+    #[test]
+    fn terminal_lines_show_output_then_error() {
+        let mut m = Model::new();
+        m.apply("r1", 0.0, begin("t"));
+        let out = |stream, text: &str| Event::TestOutput {
+            test_id: "t".into(),
+            stream,
+            text: text.into(),
+        };
+        m.apply("r1", 1.0, out(testudo_protocol::StdStream::Stdout, "one\ntwo\n"));
+        m.apply("r1", 2.0, out(testudo_protocol::StdStream::Stderr, "warn"));
+        m.apply("r1", 3.0, end("t", TestStatus::Failed, Some("expected 1\nreceived 2")));
+        let t = m.runs[0].test("t").unwrap();
+        assert_eq!(
+            terminal_lines(t, 10),
+            [
+                (TermKind::Stdout, "one".to_owned()),
+                (TermKind::Stdout, "two".to_owned()),
+                (TermKind::Stderr, "warn".to_owned()),
+                (TermKind::Error, "expected 1".to_owned()),
+                (TermKind::Error, "received 2".to_owned()),
+            ]
+        );
+        assert_eq!(terminal_lines(t, 2).len(), 2, "keeps the tail");
+        assert_eq!(terminal_lines(t, 2)[1].1, "received 2");
+
+        // No output: its steps stand in.
+        let mut m = Model::new();
+        m.apply("r1", 0.0, begin("t"));
+        m.apply(
+            "r1",
+            1.0,
+            Event::StepBegin {
+                test_id: "t".into(),
+                step_id: "s".into(),
+                title: "GET /health".into(),
+                category: Some("pw:api".into()),
+            },
+        );
+        let t = m.runs[0].test("t").unwrap();
+        assert_eq!(terminal_lines(t, 10), [(TermKind::Step, "› GET /health".to_owned())]);
     }
 }

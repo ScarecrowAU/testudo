@@ -99,6 +99,7 @@ impl TestudoApp {
             (_, None) => Some("Run not found"),
             _ => None,
         };
+        let rerun_pending = self.rerun_pending(w);
         let compare_target = test.and_then(|t| t.file.clone().map(|f| (f, t.title_path.clone())));
         let now = now_ms();
         // The compared earlier runs: (shown cells, first position, how many
@@ -291,9 +292,14 @@ impl TestudoApp {
                             .icon(media_icon("rotate-ccw"))
                             .small()
                             .ghost()
-                            .disabled(rerun_blocker.is_some())
-                            .when(rerun_blocker.is_some(), |b| b.cursor_default())
-                            .tooltip(rerun_blocker.unwrap_or("Re-run this test and watch it live"))
+                            .loading(rerun_pending)
+                            .disabled(rerun_blocker.is_some() || rerun_pending)
+                            .when(rerun_blocker.is_some() || rerun_pending, |b| b.cursor_default())
+                            .tooltip(match (rerun_pending, rerun_blocker) {
+                                (true, _) => "Re-running: the new run's page takes this one's place when it opens",
+                                (false, Some(why)) => why,
+                                (false, None) => "Re-run this test here and watch it live",
+                            })
                             .on_click(cx.listener(move |this, _, _, cx| this.rerun_test(w, cx))),
                     )
                     .when(self.store.is_some() && compare_target.is_some(), |row| {

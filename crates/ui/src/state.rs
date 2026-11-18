@@ -22,9 +22,6 @@ use crate::perf::ui_decode;
 
 pub type Retired = Vec<Arc<RenderImage>>;
 
-/// How long a closed page lingers when "keep closed pages" is off.
-pub const CLOSED_PAGE_LINGER_MS: f64 = 3000.0;
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InspectorTab {
     Network,
@@ -39,7 +36,8 @@ pub struct PagesView {
     pub selected_page: Option<PageKey>,
     pub selected_run: Option<String>,
     pub inspector_tab: InspectorTab,
-    pub keep_closed_pages: bool,
+    /// Leave completed (not failed) tests out of the grid.
+    pub hide_completed: bool,
     pub hide_repeated_stderr: bool,
     pub focus: Option<PageFocus>,
     /// Failing tests whose full error is expanded in the run list.
@@ -67,7 +65,7 @@ impl PagesView {
             selected_page: None,
             selected_run: None,
             inspector_tab: InspectorTab::Output,
-            keep_closed_pages: true,
+            hide_completed: false,
             hide_repeated_stderr: true,
             focus: None,
             expanded_tests: Default::default(),
@@ -91,55 +89,50 @@ impl PagesView {
         }
     }
 
-    /// Drop pages closed longer than the linger time (only when not keeping
-    /// closed pages). Returns true while closed pages are still lingering.
-    pub fn reap(&mut self, now: f64, retired: &mut Retired) -> bool {
-        if self.keep_closed_pages {
-            return false;
-        }
-        let expired: Vec<PageKey> = self
+    /// Show `run_id`'s results in the grid. Frames of other finished runs
+    /// are let go (their pages stay, and get their last frame back from the
+    /// recording when shown again), so GPU memory holds running runs and the
+    /// one on screen only.
+    pub fn select_run(&mut self, run_id: &str, store: Option<&Store>, retired: &mut Retired) {
+        self.selected_run = Some(run_id.to_owned());
+        self.release_hidden_frames(retired);
+        let Some(store) = store else { return };
+        let missing: Vec<PageKey> = self
             .model
             .pages
             .values()
-            .filter(|p| p.closed_at.is_some_and(|t| now - t >= CLOSED_PAGE_LINGER_MS))
+            .filter(|p| p.key.run_id == run_id && p.frame.is_none() && p.closed_at.is_some())
             .map(|p| p.key.clone())
             .collect();
-        for key in expired {
-            if let Some(mut page) = self.model.pages.remove(&key) {
-                retired.extend(page.frame.take());
-            }
-            if self.selected_page.as_ref() == Some(&key) {
-                self.selected_page = None;
+        for key in missing {
+            let Ok(mut index) = FrameIndex::open(&store.frame_path(&key.run_id, &key.page_id)) else {
+                continue;
+            };
+            let Some(last) = index.entries.len().checked_sub(1) else {
+                continue;
+            };
+            if let Some(image) = index.read(last).ok().and_then(|j| ui_decode(&j))
+                && let Some(page) = self.model.pages.get_mut(&key)
+            {
+                retired.extend(page.frame.replace(image));
             }
         }
-        self.model.pages.values().any(|p| p.closed_at.is_some())
     }
 
-    /// A new run is starting: pages of runs that already finished leave the
-    /// grid (they stay in history and in the focus view's comparison). The
-    /// focused page stays so an open focus view isn't pulled away.
-    pub fn drop_finished_run_pages(&mut self, retired: &mut Retired) {
+    /// Let go of the frames of finished runs that aren't on screen. The
+    /// focused page keeps its frame so an open focus view isn't emptied.
+    pub fn release_hidden_frames(&mut self, retired: &mut Retired) {
         let finished: std::collections::HashSet<&str> = self
             .model
             .runs
             .iter()
-            .filter(|r| !r.is_running())
+            .filter(|r| !r.is_running() && self.selected_run.as_deref() != Some(r.id.as_str()))
             .map(|r| r.id.as_str())
             .collect();
         let focused = self.focus.as_ref().filter(|f| f.recorded.is_none()).map(|f| &f.key);
-        let gone: Vec<PageKey> = self
-            .model
-            .pages
-            .keys()
-            .filter(|k| finished.contains(k.run_id.as_str()) && Some(*k) != focused)
-            .cloned()
-            .collect();
-        for key in gone {
-            if let Some(mut page) = self.model.pages.remove(&key) {
+        for page in self.model.pages.values_mut() {
+            if finished.contains(page.key.run_id.as_str()) && Some(&page.key) != focused {
                 retired.extend(page.frame.take());
-            }
-            if self.selected_page.as_ref() == Some(&key) {
-                self.selected_page = None;
             }
         }
     }
@@ -150,7 +143,7 @@ impl PagesView {
         let images = self.take_images();
         let mut fresh = PagesView::new();
         fresh.inspector_tab = self.inspector_tab;
-        fresh.keep_closed_pages = self.keep_closed_pages;
+        fresh.hide_completed = self.hide_completed;
         fresh.hide_repeated_stderr = self.hide_repeated_stderr;
         fresh.output_stream = self.output_stream;
         fresh.output_follow = self.output_follow;
@@ -409,6 +402,16 @@ impl PageFocus {
             compare: None,
             compare_by_step: true,
         }
+    }
+
+    /// Take on how `from` was set up (tab, speed, filters, comparison
+    /// alignment): a re-run's page replacing it looks the same.
+    pub fn carry_settings(&mut self, from: &PageFocus) {
+        self.speed = from.speed;
+        self.tab = from.tab;
+        self.net_filter = from.net_filter;
+        self.console_filter = from.console_filter;
+        self.compare_by_step = from.compare_by_step;
     }
 
     pub fn take_images(&mut self) -> Retired {
@@ -711,7 +714,7 @@ impl Replay {
                 mut model,
                 selected_page,
                 inspector_tab,
-                keep_closed_pages,
+                hide_completed,
                 hide_repeated_stderr,
                 focus,
                 expanded_tests,
@@ -721,7 +724,7 @@ impl Replay {
             retired.extend(model.take_frames());
             self.view.selected_page = selected_page;
             self.view.inspector_tab = inspector_tab;
-            self.view.keep_closed_pages = keep_closed_pages;
+            self.view.hide_completed = hide_completed;
             self.view.hide_repeated_stderr = hide_repeated_stderr;
             self.view.focus = focus;
             self.view.expanded_tests = expanded_tests;
@@ -737,7 +740,6 @@ impl Replay {
             self.cursor += 1;
         }
         self.t = t;
-        self.view.reap(t, retired);
         self.update_frames(store, retired);
     }
 
@@ -863,29 +865,29 @@ mod tests {
     }
 
     #[test]
-    fn new_run_drops_pages_of_finished_runs_only() {
+    fn hidden_finished_runs_let_go_of_frames_but_keep_pages() {
         let mut view = PagesView::new();
         page_events(&mut view, "old", 0.0);
         view.apply("old", 2.0, Event::ProcessExited { code: Some(0) });
         page_events(&mut view, "busy", 3.0); // still running
         let mut retired = Vec::new();
-        view.drop_finished_run_pages(&mut retired);
-        let runs: Vec<&str> = view.model.pages.keys().map(|k| k.run_id.as_str()).collect();
-        assert_eq!(runs, ["busy"]);
+        view.select_run("busy", None, &mut retired);
+        assert_eq!(view.selected_run.as_deref(), Some("busy"));
+        assert_eq!(view.model.pages.len(), 2, "pages of every run stay, to be shown again");
         assert_eq!(view.model.runs.len(), 2, "runs stay in the run list");
     }
 
     #[test]
     fn clear_forgets_runs_and_pages_but_keeps_settings() {
         let mut view = PagesView::new();
-        view.keep_closed_pages = false;
+        view.hide_completed = true;
         view.hide_repeated_stderr = false;
         page_events(&mut view, "r1", 0.0);
         view.collapsed_runs.insert("r1".into());
         let _ = view.clear();
         assert!(view.model.runs.is_empty() && view.model.pages.is_empty());
         assert!(view.collapsed_runs.is_empty() && view.selected_run.is_none());
-        assert!(!view.keep_closed_pages && !view.hide_repeated_stderr, "settings kept");
+        assert!(view.hide_completed && !view.hide_repeated_stderr, "settings kept");
     }
 
     #[test]

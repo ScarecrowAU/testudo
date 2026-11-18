@@ -153,6 +153,13 @@ pub enum Event {
     RunEnd {
         status: String,
     },
+    /// Output the runner attributes to one test (Playwright's per-test
+    /// stdout/stderr, Vitest's console logs). May be several lines.
+    TestOutput {
+        test_id: String,
+        stream: StdStream,
+        text: String,
+    },
 
     // --- browser instrumentation (preload / cdp) ---
     PageOpened {
@@ -363,6 +370,13 @@ mod tests {
         let json = br#"{"type":"pageOpened","pageId":"1-0","testId":"t1","browser":"chromium"}"#;
         let ev: Event = serde_json::from_slice(json).unwrap();
         assert!(matches!(ev, Event::PageOpened { ref page_id, .. } if page_id == "1-0"));
+    }
+
+    #[test]
+    fn test_output_parses() {
+        let json = br#"{"type":"testOutput","testId":"t1","stream":"stderr","text":"oops\n"}"#;
+        let ev: Event = serde_json::from_slice(json).unwrap();
+        assert!(matches!(ev, Event::TestOutput { stream: StdStream::Stderr, ref text, .. } if text == "oops\n"));
     }
 
     #[test]

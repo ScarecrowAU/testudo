@@ -88,6 +88,10 @@ testudo-cli export <run-id> <page-id> out.mp4
 
 Filters match `all`, a runner name, or part of a suite name or config path. Arguments after `--` go to every started runner.
 
+In the live view, the sidebar lists each run with its counts and the tests running right now; click a run to show its results in the grid. Tests that open no browser page (API tests, setup projects, plain Vitest) get a tile showing their output and error instead. **Hide completed** leaves completed tests out of the grid (failures stay); untick it to bring them back.
+
+The focus view's ↻ button re-runs that one test in place: the new run's page replaces the current one when it opens, keeping the tab and any comparison.
+
 In the focus view: wheel scrubs, Shift+wheel or ←/→ steps one frame, Space plays or pauses, Esc returns to the grid. Stopping a run (button, closing the window, Ctrl+C) lets the runner tear down cleanly before anything is killed.
 
 ## Configuration

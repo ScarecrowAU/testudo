@@ -10,6 +10,8 @@ use testudo_protocol::{Event, NetworkPhase, StdStream, TestStatus};
 
 const MAX_LINES: usize = 5_000;
 const MAX_ROWS: usize = 2_000;
+/// Output lines kept per test (its terminal tile shows the tail).
+const MAX_TEST_LINES: usize = 500;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PageKey {
@@ -114,6 +116,10 @@ pub struct Test {
     /// Every reported step (Playwright actions, expects, test.step), in start
     /// order, stamped with hub receive time like everything else.
     pub steps: Vec<StepRow>,
+    /// When the current attempt began (None while queued).
+    pub started_at: Option<f64>,
+    /// Output the runner attributed to this test, one entry per line.
+    pub output: Vec<OutputLine>,
 }
 
 pub struct StepRow {
@@ -341,6 +347,8 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
                 t.steps.clear();
                 t.current_step = None;
                 t.note = None;
+                t.started_at = Some(at);
+                t.output.clear();
             } else {
                 run.tests.push(Test {
                     id: test_id,
@@ -356,6 +364,8 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
                     current_step: None,
                     note: None,
                     steps: Vec::new(),
+                    started_at: Some(at),
+                    output: Vec::new(),
                 });
             }
         }
@@ -382,6 +392,8 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
                     current_step: None,
                     note: None,
                     steps: Vec::new(),
+                    started_at: None,
+                    output: Vec::new(),
                 });
             }
         }
@@ -443,6 +455,22 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
             }
         }
         Event::RunEnd { status } => run.run_end = Some(status),
+        Event::TestOutput { test_id, stream, text } => {
+            if let Some(t) = run.test_mut(&test_id) {
+                let source = match stream {
+                    StdStream::Stdout => Source::Stdout,
+                    StdStream::Stderr => Source::Stderr,
+                };
+                for line in text.lines() {
+                    let line = OutputLine {
+                        at,
+                        source,
+                        text: line.to_owned(),
+                    };
+                    push_capped(&mut t.output, line, MAX_TEST_LINES);
+                }
+            }
+        }
         Event::Stdio { stream, line } => {
             let source = match stream {
                 _ if line.starts_with("[testudo]") => Source::Testudo,
