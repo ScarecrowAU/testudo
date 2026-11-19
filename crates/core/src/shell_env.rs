@@ -17,6 +17,23 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 /// Shell bookkeeping that must not leak into our environment.
 const SKIP: &[&str] = &["_", "PWD", "OLDPWD", "SHLVL", "PS1", "PS2", "PROMPT_COMMAND"];
 
+/// macOS allocator debugging switches. When one is set but logging can't be
+/// changed, every process that inherits it prints "MallocStackLogging: can't
+/// turn off malloc stack logging because it was not enabled" to stderr, so a
+/// cargo build prints it once per rustc. Testudo never imports these, and
+/// removes them from the processes it starts.
+pub const MALLOC_DEBUG_VARS: &[&str] = &[
+    "MallocStackLogging",
+    "MallocStackLoggingNoCompact",
+    "MallocStackLoggingDirectory",
+];
+
+/// True for the stderr line macOS prints when a `MALLOC_DEBUG_VARS` switch
+/// can't take effect.
+pub fn is_malloc_debug_noise(line: &str) -> bool {
+    line.contains("MallocStackLogging: ")
+}
+
 /// Read the login shell's environment. `None` if disabled, unavailable,
 /// or it took too long.
 pub fn login_shell_env() -> Option<HashMap<String, String>> {
@@ -56,7 +73,7 @@ fn parse(output: &str) -> Option<HashMap<String, String>> {
     Some(
         body.split('\0')
             .filter_map(|kv| kv.split_once('='))
-            .filter(|(k, _)| !k.is_empty() && !SKIP.contains(k))
+            .filter(|(k, _)| !k.is_empty() && !SKIP.contains(k) && !MALLOC_DEBUG_VARS.contains(k))
             .map(|(k, v)| (k.to_owned(), v.to_owned()))
             .collect(),
     )
@@ -102,6 +119,20 @@ pub unsafe fn import_login_shell_env() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malloc_debug_switches_are_not_imported() {
+        let out = format!("{START}MallocStackLogging=0\0MallocStackLoggingNoCompact=1\0HOME=/h\0{END}");
+        let env = parse(&out).unwrap();
+        assert_eq!(env.len(), 1, "{env:?}");
+        assert!(is_malloc_debug_noise(
+            "MallocStackLogging: can't turn off malloc stack logging because it was not enabled."
+        ));
+        assert!(is_malloc_debug_noise(
+            "rustc(4242) MallocStackLogging: can't turn off malloc stack logging because it was not enabled."
+        ));
+        assert!(!is_malloc_debug_noise("   Compiling testudo-core v0.1.2"));
+    }
 
     #[test]
     fn parses_between_markers_ignoring_banners() {
