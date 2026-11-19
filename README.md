@@ -88,7 +88,9 @@ testudo-cli export <run-id> <page-id> out.mp4
 
 Filters match `all`, a runner name, or part of a suite name or config path. Arguments after `--` go to every started runner.
 
-In the live view, the sidebar lists each run with its counts and the tests running right now; click a run to show its results in the grid. Tests that open no browser page (API tests, setup projects, plain Vitest) get a tile showing their output and error instead. **Hide completed** leaves completed tests out of the grid (failures stay); untick it to bring them back.
+Suites run one at a time: **Run all** (or ▶ while a run is going) queues them, and the next starts when the running one finishes. A queued suite's **Start** button runs it straight away, alongside the running one.
+
+In the live view, the sidebar lists each run with its counts and the tests running right now; click a run to show its results in the grid. Tests that open no browser page get a tile showing their output and error instead: one per test (API tests, setup projects), or one per test file for plain Vitest. Click such a tile to read its whole log. **Hide completed** leaves completed tests out of the grid (failures stay); untick it to bring them back.
 
 The focus view's ↻ button re-runs that one test in place: the new run's page replaces the current one when it opens, keeping the tab and any comparison.
 

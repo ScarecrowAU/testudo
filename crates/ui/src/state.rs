@@ -40,6 +40,8 @@ pub struct PagesView {
     pub hide_completed: bool,
     pub hide_repeated_stderr: bool,
     pub focus: Option<PageFocus>,
+    /// The full log of a page-less tile, shown in place of the grid.
+    pub log_focus: Option<LogFocus>,
     /// Failing tests whose full error is expanded in the run list.
     pub expanded_tests: std::collections::HashSet<String>,
     /// Runs shown as just their header and counts in the run list.
@@ -49,6 +51,15 @@ pub struct PagesView {
     pub output_follow: bool,
     /// Lines shown at the last render, to tell new output from a user scroll.
     pub output_seen: usize,
+}
+
+/// Whose log the log view shows. By id, so it survives tests arriving.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum LogFocus {
+    /// A Vitest file's page-less tests.
+    File { run_id: String, file: String },
+    /// One page-less test.
+    Test { run_id: String, test_id: String },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -68,6 +79,7 @@ impl PagesView {
             hide_completed: false,
             hide_repeated_stderr: true,
             focus: None,
+            log_focus: None,
             expanded_tests: Default::default(),
             collapsed_runs: Default::default(),
             output_stream: StreamFilter::All,
@@ -78,7 +90,7 @@ impl PagesView {
 
     pub fn apply(&mut self, run_id: &str, at: f64, event: Event) {
         // A new run collapses the finished ones in the run list. Runs still
-        // going stay open: "run all" starts several suites together.
+        // going stay open: a queued suite can be started alongside another.
         if matches!(event, Event::RunStarted { .. }) && !self.model.runs.iter().any(|r| r.id == run_id) {
             let finished = self.model.runs.iter().filter(|r| !r.is_running()).map(|r| r.id.clone());
             self.collapsed_runs.extend(finished);

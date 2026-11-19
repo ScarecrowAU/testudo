@@ -340,6 +340,11 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
         } => {
             // Queued tests start here; retries reuse the test id: reset in place.
             if let Some(t) = run.test_mut(&test_id) {
+                // A first start keeps output that came ahead of it: Vitest
+                // sends a test's console logs before its begin.
+                if !t.queued {
+                    t.output.clear();
+                }
                 t.queued = false;
                 t.status = None;
                 t.error = None;
@@ -348,7 +353,6 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
                 t.current_step = None;
                 t.note = None;
                 t.started_at = Some(at);
-                t.output.clear();
             } else {
                 run.tests.push(Test {
                     id: test_id,

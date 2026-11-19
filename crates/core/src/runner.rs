@@ -416,6 +416,10 @@ fn build_command(
             }
             args.push("--reporter=default".into());
             args.push(format!("--reporter={}", adapters.join("vitest-reporter.mjs").display()));
+            // Test line numbers: shown on tiles and needed to re-run one test.
+            if !user_args.iter().any(|a| a.starts_with("--includeTaskLocation")) {
+                args.push("--includeTaskLocation".into());
+            }
             args.extend(user_args.iter().cloned());
             Ok(Launch {
                 program,

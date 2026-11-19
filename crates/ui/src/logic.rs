@@ -58,6 +58,9 @@ pub enum Tile {
     /// A test without a page (API tests, setup, plain Vitest), shown as its
     /// terminal output. Indexes into `model.runs` and that run's tests.
     Terminal { run: usize, test: usize },
+    /// A Vitest test file's page-less tests, one tile for the file. Indexes
+    /// into `model.runs` and that run's tests, in the order they arrived.
+    File { run: usize, tests: Vec<usize> },
 }
 
 /// What the page grid shows.
@@ -105,8 +108,22 @@ pub fn grid_tiles(model: &Model, run: Option<&str>, hide_completed: bool, now: f
         if r.runner == "vitest" && pages.iter().any(|p| p.test_id.is_none()) {
             continue;
         }
+        // Vitest: one tile per test file, holding its tests (queued ones too).
+        let by_file = r.runner == "vitest";
+        let mut files: Vec<(&str, Vec<usize>)> = Vec::new();
         for (ti, t) in r.tests.iter().enumerate() {
-            if t.queued || pages.iter().any(|p| p.test_id.as_deref() == Some(t.id.as_str())) {
+            let has_page = pages.iter().any(|p| p.test_id.as_deref() == Some(t.id.as_str()));
+            if by_file
+                && !has_page
+                && let Some(file) = t.file.as_deref()
+            {
+                match files.iter_mut().find(|(f, _)| *f == file) {
+                    Some((_, tests)) => tests.push(ti),
+                    None => files.push((file, vec![ti])),
+                }
+                continue;
+            }
+            if t.queued || has_page {
                 continue;
             }
             if t.status.is_none() && t.started_at.is_none_or(|s| now - s < TERMINAL_GRACE_MS) {
@@ -115,6 +132,16 @@ pub fn grid_tiles(model: &Model, run: Option<&str>, hide_completed: bool, now: f
             }
             let key = (test_state(t), t.title.to_lowercase(), 1, t.id.clone());
             keyed.push((key, Tile::Terminal { run: ri, test: ti }));
+        }
+        for (file, tests) in files {
+            let members: Vec<&Test> = tests.iter().map(|&ti| &r.tests[ti]).collect();
+            // Not started yet: the file appears with its first test.
+            if members.iter().all(|t| t.queued) {
+                continue;
+            }
+            let name = file.rsplit('/').next().unwrap_or(file).to_lowercase();
+            let key = (file_state(&members), name, 1, file.to_owned());
+            keyed.push((key, Tile::File { run: ri, tests }));
         }
     }
     let total = keyed.len();
@@ -129,11 +156,148 @@ pub fn grid_tiles(model: &Model, run: Option<&str>, hide_completed: bool, now: f
     }
 }
 
+/// A test file's state: running while any of its tests is still to finish,
+/// else failed if any failed.
+fn file_state(tests: &[&Test]) -> PaneState {
+    if tests.iter().any(|t| t.status.is_none()) {
+        PaneState::Running
+    } else if tests.iter().any(|t| test_state(t) == PaneState::Failed) {
+        PaneState::Failed
+    } else {
+        PaneState::Complete
+    }
+}
+
+/// A test file's overall status, for its tile's pill: None while running.
+pub fn file_status(tests: &[&Test]) -> Option<TestStatus> {
+    match file_state(tests) {
+        PaneState::Running => None,
+        PaneState::Failed => Some(TestStatus::Failed),
+        PaneState::Complete if tests.iter().all(|t| t.status == Some(TestStatus::Skipped)) => Some(TestStatus::Skipped),
+        PaneState::Complete if tests.iter().any(|t| t.status == Some(TestStatus::Interrupted)) => {
+            Some(TestStatus::Interrupted)
+        }
+        PaneState::Complete => Some(TestStatus::Passed),
+    }
+}
+
+/// A test file tile's lines: each test with its result, followed by what
+/// it printed and the first line of its error. Shows `max` lines: the tail
+/// while the file runs, from the first failure once it failed, else the top.
+pub fn file_lines(tests: &[&Test], max: usize) -> Vec<(TermKind, String)> {
+    let mut lines = Vec::new();
+    let mut first_failure = None;
+    for t in tests {
+        let (icon, kind) = match t.status {
+            _ if t.queued => ("·", TermKind::Note),
+            None => ("›", TermKind::Stdout),
+            Some(TestStatus::Passed) => ("✔", TermKind::Passed),
+            Some(TestStatus::Failed | TestStatus::TimedOut) => ("✘", TermKind::Error),
+            Some(s) => (status_icon(Some(s)).0, TermKind::Note),
+        };
+        if kind == TermKind::Error && first_failure.is_none() {
+            first_failure = Some(lines.len());
+        }
+        let line = match t.duration_ms {
+            Some(ms) => format!("{icon} {} ({})", t.title, fmt_dur(ms)),
+            None => format!("{icon} {}", t.title),
+        };
+        lines.push((kind, line));
+        for l in &t.output {
+            let kind = match l.source {
+                Source::Stderr => TermKind::Stderr,
+                _ => TermKind::Stdout,
+            };
+            lines.push((kind, format!("  {}", l.text)));
+        }
+        if let Some(error) = &t.error {
+            lines.push((TermKind::Error, format!("  {}", summary_line(error))));
+        }
+    }
+    let max = max.max(1);
+    let start = if tests.iter().any(|t| t.status.is_none()) {
+        lines.len().saturating_sub(max)
+    } else {
+        first_failure.unwrap_or(0).min(lines.len().saturating_sub(max))
+    };
+    lines.into_iter().skip(start).take(max).collect()
+}
+
+/// The tests a log view shows, from the model.
+pub fn log_tests<'a>(model: &'a Model, focus: &crate::state::LogFocus) -> Vec<&'a Test> {
+    use crate::state::LogFocus;
+    let (run_id, file, test_id) = match focus {
+        LogFocus::File { run_id, file } => (run_id, Some(file.as_str()), None),
+        LogFocus::Test { run_id, test_id } => (run_id, None, Some(test_id.as_str())),
+    };
+    let keep = |t: &Test| match (file, test_id) {
+        (Some(f), _) => t.file.as_deref() == Some(f),
+        (_, Some(id)) => t.id == id,
+        _ => false,
+    };
+    model
+        .run(run_id)
+        .map(|r| r.tests.iter().filter(|t| keep(t)).collect())
+        .unwrap_or_default()
+}
+
+/// Everything a log view shows for `tests`: each test's result, its group,
+/// what it printed (else its steps), its skip reason and its whole error.
+pub fn log_lines(tests: &[&Test]) -> Vec<(TermKind, String)> {
+    let mut lines = Vec::new();
+    for (i, t) in tests.iter().enumerate() {
+        if i > 0 {
+            lines.push((TermKind::Note, String::new()));
+        }
+        let (icon, kind) = match t.status {
+            _ if t.queued => ("·", TermKind::Note),
+            None => ("›", TermKind::Stdout),
+            Some(TestStatus::Passed) => ("✔", TermKind::Passed),
+            Some(TestStatus::Failed | TestStatus::TimedOut) => ("✘", TermKind::Error),
+            Some(s) => (status_icon(Some(s)).0, TermKind::Note),
+        };
+        let state = match (t.queued, t.status, t.duration_ms) {
+            (true, ..) => "pending".to_owned(),
+            (_, s, Some(ms)) => format!("{}, {}", status_label(s).to_lowercase(), fmt_dur(ms)),
+            (_, s, None) => status_label(s).to_lowercase(),
+        };
+        lines.push((kind, format!("{icon} {} ({state})", t.title)));
+        if let [groups @ .., _] = t.title_path.as_slice()
+            && !groups.is_empty()
+        {
+            lines.push((TermKind::Note, format!("  {}", groups.join(" › "))));
+        }
+        if t.output.is_empty() {
+            for s in &t.steps {
+                lines.push(match s.error {
+                    Some(_) => (TermKind::StepFailed, format!("  ✘ {}", s.title)),
+                    None => (TermKind::Step, format!("  › {}", s.title)),
+                });
+            }
+        }
+        for l in &t.output {
+            let kind = match l.source {
+                Source::Stderr => TermKind::Stderr,
+                _ => TermKind::Stdout,
+            };
+            lines.push((kind, format!("  {}", l.text)));
+        }
+        if let Some(note) = t.note.as_deref().filter(|_| t.status == Some(TestStatus::Skipped)) {
+            lines.push((TermKind::Note, format!("  skipped: {note}")));
+        }
+        if let Some(error) = &t.error {
+            lines.extend(error.lines().map(|l| (TermKind::Error, format!("  {l}"))));
+        }
+    }
+    lines
+}
+
 /// How a terminal tile line is coloured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TermKind {
     Stdout,
     Stderr,
+    Passed,
     Step,
     StepFailed,
     Error,
@@ -170,8 +334,21 @@ pub fn terminal_lines(t: &Test, max: usize) -> Vec<(TermKind, String)> {
         lines.extend(error.lines().map(|l| (TermKind::Error, l.to_owned())));
     }
     if lines.is_empty() {
-        let note = if t.status.is_none() { "running…" } else { "no output" };
-        lines.push((TermKind::Note, note.to_owned()));
+        // Nothing printed: say where the test sits and how it went.
+        if let [groups @ .., _] = t.title_path.as_slice()
+            && !groups.is_empty()
+        {
+            lines.push((TermKind::Note, groups.join(" › ")));
+        }
+        let state = match (t.status, t.duration_ms) {
+            (None, _) => "running…".to_owned(),
+            (Some(s), Some(ms)) => format!("{} in {}", status_label(Some(s)).to_lowercase(), fmt_dur(ms)),
+            (Some(s), None) => status_label(Some(s)).to_lowercase(),
+        };
+        lines.push((TermKind::Note, state));
+        if t.status.is_some() {
+            lines.push((TermKind::Note, "no console output".to_owned()));
+        }
     }
     let skip = lines.len().saturating_sub(max);
     lines.split_off(skip)
@@ -468,6 +645,14 @@ pub fn fmt_dur(ms: f64) -> String {
 
 pub use testudo_core::tilde;
 
+/// `file:line`, or just `file` when the runner didn't report the line.
+pub fn with_line(file: &str, line: Option<u32>) -> String {
+    match line {
+        Some(l) => format!("{file}:{l}"),
+        None => file.to_owned(),
+    }
+}
+
 /// Whether opening `dir` should skip the automatic suite scan: the home
 /// folder (where Testudo starts when launched from Finder or the Dock) and the
 /// filesystem root hold everything, so scanning them walks the whole disk.
@@ -485,10 +670,75 @@ pub fn expand_tilde(p: &str) -> String {
     }
 }
 
+/// Suites waiting to run, by suite id, in order. One suite runs at a time:
+/// the next one starts when nothing is running.
+#[derive(Debug, Default, Clone)]
+pub struct SuiteQueue(Vec<String>);
+
+impl SuiteQueue {
+    /// Add `id` at the back. False if it is already waiting.
+    pub fn push(&mut self, id: &str) -> bool {
+        if self.contains(id) {
+            return false;
+        }
+        self.0.push(id.to_owned());
+        true
+    }
+
+    /// Take `id` out of the queue. False if it wasn't waiting.
+    pub fn remove(&mut self, id: &str) -> bool {
+        let before = self.0.len();
+        self.0.retain(|q| q != id);
+        self.0.len() != before
+    }
+
+    pub fn contains(&self, id: &str) -> bool {
+        self.0.iter().any(|q| q == id)
+    }
+
+    /// 0-based place in line.
+    pub fn position(&self, id: &str) -> Option<usize> {
+        self.0.iter().position(|q| q == id)
+    }
+
+    pub fn pop_front(&mut self) -> Option<String> {
+        (!self.0.is_empty()).then(|| self.0.remove(0))
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use testudo_protocol::Event;
+
+    #[test]
+    fn suite_queue_keeps_order_and_skips_duplicates() {
+        let mut q = SuiteQueue::default();
+        assert!(q.push("a"));
+        assert!(q.push("b"));
+        assert!(!q.push("a"));
+        assert!(q.push("c"));
+        assert_eq!(q.len(), 3);
+        assert_eq!(q.position("b"), Some(1));
+        assert!(q.remove("b"));
+        assert!(!q.remove("b"));
+        assert_eq!(q.pop_front().as_deref(), Some("a"));
+        assert_eq!(q.pop_front().as_deref(), Some("c"));
+        assert_eq!(q.pop_front(), None);
+        assert!(q.is_empty());
+    }
 
     #[test]
     fn failure_heuristic() {
@@ -709,7 +959,7 @@ mod tests {
                 .into_iter()
                 .map(|t| match t {
                     Tile::Page(k) => k.page_id,
-                    Tile::Terminal { .. } => panic!("every test has a page"),
+                    Tile::Terminal { .. } | Tile::File { .. } => panic!("every test has a page"),
                 })
                 .collect()
         };
@@ -821,6 +1071,202 @@ mod tests {
         m.apply("r1", 1.0, begin("t1"));
         m.apply("r1", 2.0, end("t1", TestStatus::Passed, None));
         assert_eq!(grid_tiles(&m, None, false, 10_000.0).tiles.len(), 1);
+    }
+
+    #[test]
+    fn output_sent_before_begin_survives_the_begin() {
+        // Vitest's order: queued, console logs, then begin and end.
+        let mut m = Model::new();
+        m.apply(
+            "r1",
+            0.0,
+            Event::TestQueued {
+                test_id: "t".into(),
+                title: "t".into(),
+                title_path: vec![],
+                file: None,
+                line: None,
+                project: None,
+            },
+        );
+        let log = Event::TestOutput {
+            test_id: "t".into(),
+            stream: testudo_protocol::StdStream::Stdout,
+            text: "hello\n".into(),
+        };
+        m.apply("r1", 1.0, log.clone());
+        m.apply("r1", 1.0, begin("t"));
+        m.apply("r1", 2.0, end("t", TestStatus::Passed, None));
+        let t = m.runs[0].test("t").unwrap();
+        assert_eq!(terminal_lines(t, 10), [(TermKind::Stdout, "hello".to_owned())]);
+
+        // A retry starts clean.
+        m.apply("r1", 3.0, begin("t"));
+        assert!(m.runs[0].test("t").unwrap().output.is_empty());
+    }
+
+    #[test]
+    fn vitest_tests_share_a_tile_per_file() {
+        let mut m = Model::new();
+        m.apply(
+            "r1",
+            0.0,
+            Event::RunStarted {
+                label: "r1".into(),
+                runner: "vitest".into(),
+                cwd: "/p".into(),
+                args: vec![],
+            },
+        );
+        let queued = |id: &str, file: &str| Event::TestQueued {
+            test_id: id.into(),
+            title: id.into(),
+            title_path: vec![id.into()],
+            file: Some(file.into()),
+            line: None,
+            project: None,
+        };
+        m.apply("r1", 0.0, queued("a1", "/p/a.test.ts"));
+        m.apply("r1", 0.0, queued("b1", "/p/b.test.ts"));
+        m.apply("r1", 0.0, queued("a2", "/p/a.test.ts"));
+        m.apply("r1", 0.0, queued("c1", "/p/c.test.ts"));
+        let ends = [
+            ("a1", TestStatus::Passed, None),
+            ("a2", TestStatus::Failed, Some("expected 1\nreceived 2")),
+            ("b1", TestStatus::Passed, None),
+        ];
+        for (id, status, error) in ends {
+            m.apply("r1", 1.0, begin(id));
+            m.apply("r1", 2.0, end(id, status, error));
+        }
+        // c.test.ts hasn't started: no tile yet. a failed, so it sorts first.
+        let g = grid_tiles(&m, None, false, 10_000.0);
+        assert_eq!(
+            g.tiles,
+            [
+                Tile::File {
+                    run: 0,
+                    tests: vec![0, 2]
+                },
+                Tile::File { run: 0, tests: vec![1] },
+            ]
+        );
+        let r = &m.runs[0];
+        let a: Vec<&Test> = [0, 2].iter().map(|&i| &r.tests[i]).collect();
+        assert_eq!(file_status(&a), Some(TestStatus::Failed));
+        assert_eq!(
+            file_lines(&a, 10),
+            [
+                (TermKind::Passed, "✔ a1".to_owned()),
+                (TermKind::Error, "✘ a2".to_owned()),
+                (TermKind::Error, "  expected 1".to_owned()),
+            ]
+        );
+        // Short on room: start at the first failure.
+        assert_eq!(file_lines(&a, 2)[0].1, "✘ a2");
+
+        // c starts: its file is running, its queued test listed as pending.
+        m.apply("r1", 3.0, begin("c1"));
+        let g = grid_tiles(&m, None, true, 3.0);
+        assert_eq!(g.tiles[0], Tile::File { run: 0, tests: vec![3] });
+        assert_eq!(g.hidden, 1, "the passed file is hidden");
+    }
+
+    #[test]
+    fn log_view_shows_each_test_in_full() {
+        use crate::state::LogFocus;
+        let mut m = Model::new();
+        let test = |id: &str, file: &str| Event::TestBegin {
+            test_id: id.into(),
+            title: id.into(),
+            title_path: vec!["Group".into(), id.into()],
+            file: Some(file.into()),
+            line: None,
+            project: None,
+            worker_index: None,
+        };
+        m.apply("r1", 0.0, test("a", "/p/x.test.ts"));
+        m.apply("r1", 0.0, test("b", "/p/y.test.ts"));
+        m.apply("r1", 0.0, test("c", "/p/x.test.ts"));
+        m.apply(
+            "r1",
+            1.0,
+            Event::TestOutput {
+                test_id: "a".into(),
+                stream: testudo_protocol::StdStream::Stdout,
+                text: "hi\n".into(),
+            },
+        );
+        m.apply("r1", 2.0, end("a", TestStatus::Passed, None));
+        m.apply("r1", 2.0, end("c", TestStatus::Failed, Some("one\ntwo\nthree")));
+        let focus = LogFocus::File {
+            run_id: "r1".into(),
+            file: "/p/x.test.ts".into(),
+        };
+        let tests = log_tests(&m, &focus);
+        assert_eq!(tests.len(), 2);
+        let text: Vec<String> = log_lines(&tests).into_iter().map(|(_, l)| l).collect();
+        assert_eq!(
+            text,
+            [
+                "✔ a (passed)",
+                "  Group",
+                "  hi",
+                "",
+                "✘ c (failed)",
+                "  Group",
+                "  one",
+                "  two",
+                "  three"
+            ]
+        );
+        let one = LogFocus::Test {
+            run_id: "r1".into(),
+            test_id: "b".into(),
+        };
+        assert_eq!(log_tests(&m, &one).len(), 1);
+    }
+
+    #[test]
+    fn quiet_test_tile_shows_group_and_result() {
+        let mut m = Model::new();
+        m.apply(
+            "r1",
+            0.0,
+            Event::TestBegin {
+                test_id: "t".into(),
+                title: "closes".into(),
+                title_path: vec!["Sheet".into(), "dismissal".into(), "closes".into()],
+                file: None,
+                line: None,
+                project: None,
+                worker_index: None,
+            },
+        );
+        let t = m.runs[0].test("t").unwrap();
+        assert_eq!(
+            terminal_lines(t, 10),
+            [
+                (TermKind::Note, "Sheet › dismissal".to_owned()),
+                (TermKind::Note, "running…".to_owned())
+            ]
+        );
+        m.apply(
+            "r1",
+            1.0,
+            Event::TestEnd {
+                test_id: "t".into(),
+                status: TestStatus::Passed,
+                duration_ms: Some(12.0),
+                error: None,
+                note: None,
+            },
+        );
+        let t = m.runs[0].test("t").unwrap();
+        assert_eq!(terminal_lines(t, 10)[1].1, "passed in 12ms");
+        assert_eq!(terminal_lines(t, 10)[2].1, "no console output");
+        assert_eq!(with_line("a.ts", None), "a.ts");
+        assert_eq!(with_line("a.ts", Some(7)), "a.ts:7");
     }
 
     #[test]

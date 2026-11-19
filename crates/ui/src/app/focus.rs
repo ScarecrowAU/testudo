@@ -4,7 +4,7 @@
 
 use super::tables::{ConsoleItem, NetItem};
 use super::*;
-use crate::logic::{best_grid, compare_position, run_number, status_label, url_path};
+use crate::logic::{best_grid, compare_position, run_number, status_label, url_path, with_line};
 use crate::state::{ConsoleFilter, FocusTab, NetFilter};
 use std::sync::Arc;
 use testudo_protocol::TestStatus;
@@ -143,7 +143,7 @@ impl TestudoApp {
             .and_then(|t| t.file.as_ref().map(|f| (f, t.line)))
             .map(|(f, line)| {
                 let name = f.rsplit('/').next().unwrap_or(f);
-                format!("{name}:{}", line.unwrap_or(0))
+                with_line(name, line)
             });
 
         let steps: Rc<Vec<StepItem>> = Rc::new(
