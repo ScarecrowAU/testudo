@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, anyhow, bail};
+use testudo_core::shell_env::{MALLOC_DEBUG_VARS, is_malloc_debug_noise};
 
 use crate::install::{BINARIES, Bundle};
 use crate::{COMMIT, Kind, REPO, Update, UpdateChannel, agent};
@@ -100,6 +101,9 @@ fn git(dir: &Path) -> Command {
 
 /// Run `cmd`, passing its stderr (where git and cargo report) to `log`.
 fn run(cmd: &mut Command, log: &mut dyn FnMut(&str)) -> Result<()> {
+    for var in MALLOC_DEBUG_VARS {
+        cmd.env_remove(var);
+    }
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -109,6 +113,9 @@ fn run(cmd: &mut Command, log: &mut dyn FnMut(&str)) -> Result<()> {
     let mut tail = Vec::new();
     for line in BufReader::new(child.stderr.take().unwrap()).lines() {
         let line = line?;
+        if is_malloc_debug_noise(&line) {
+            continue;
+        }
         log(&line);
         tail.push(line);
         if tail.len() > 20 {

@@ -288,6 +288,9 @@ impl Orchestrator {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        for var in crate::shell_env::MALLOC_DEBUG_VARS {
+            cmd.env_remove(var);
+        }
         #[cfg(unix)]
         cmd.process_group(0);
 
