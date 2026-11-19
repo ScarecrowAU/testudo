@@ -726,10 +726,86 @@ impl SuiteQueue {
     }
 }
 
+/// A worktree's path for the worktree picker: relative to the project root
+/// (the main worktree) when inside it, otherwise from `~` or `/`.
+pub fn worktree_path(path: &std::path::Path, root: &std::path::Path) -> String {
+    match path.strip_prefix(root) {
+        Ok(rel) if !rel.as_os_str().is_empty() => rel.display().to_string(),
+        _ => tilde(path),
+    }
+}
+
+/// Shorten a path the way the fish shell does, until `fits` accepts it:
+/// folders become their first letter, from the left, one at a time
+/// (`.stackit` becomes `.s`). The first part (`~` or the root) and the
+/// last folder stay whole. Returns the shortest form when nothing fits.
+pub fn fish_shorten(path: &str, fits: impl Fn(&str) -> bool) -> String {
+    let mut parts: Vec<String> = path.split('/').map(str::to_owned).collect();
+    let mut out = path.to_owned();
+    // Index 0 is `~`, a relative first folder, or "" before a leading `/`.
+    let first = usize::from(parts.first().is_some_and(|p| p.is_empty() || p == "~"));
+    for i in first..parts.len().saturating_sub(1) {
+        if fits(&out) {
+            break;
+        }
+        let keep = if parts[i].starts_with('.') { 2 } else { 1 };
+        let short: String = parts[i].chars().take(keep).collect();
+        if short == parts[i] {
+            continue;
+        }
+        parts[i] = short;
+        out = parts.join("/");
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use testudo_protocol::Event;
+
+    #[test]
+    fn worktree_paths_are_relative_to_the_project_inside_it() {
+        use std::path::Path;
+        let root = Path::new("/srv/acme-shop");
+        assert_eq!(
+            worktree_path(Path::new("/srv/acme-shop/.stackit/worktrees/docs"), root),
+            ".stackit/worktrees/docs"
+        );
+        assert_eq!(worktree_path(root, root), "/srv/acme-shop", "the root itself");
+        assert_eq!(
+            worktree_path(Path::new("/srv/acme-shop-hotfix"), root),
+            "/srv/acme-shop-hotfix"
+        );
+        assert_eq!(worktree_path(Path::new("/srv/other"), root), "/srv/other");
+    }
+
+    #[test]
+    fn fish_shorten_abbreviates_folders_from_the_left() {
+        let path = "~/projects/acme-shop/.stackit/worktrees/feat/checkout-validation";
+        assert_eq!(fish_shorten(path, |_| true), path, "fits as is");
+        let fits = |n: usize| move |s: &str| s.chars().count() <= n;
+        assert_eq!(
+            fish_shorten(path, fits(57)),
+            "~/p/acme-shop/.stackit/worktrees/feat/checkout-validation"
+        );
+        assert_eq!(
+            fish_shorten(path, fits(48)),
+            "~/p/a/.s/worktrees/feat/checkout-validation"
+        );
+        assert_eq!(
+            fish_shorten(path, fits(1)),
+            "~/p/a/.s/w/f/checkout-validation",
+            "never fits: every folder but the last is shortened"
+        );
+        assert_eq!(fish_shorten("/srv/app/very-long-name", fits(10)), "/s/a/very-long-name");
+        assert_eq!(fish_shorten("~", fits(0)), "~");
+        assert_eq!(
+            fish_shorten("~/é-folder/x", fits(4)),
+            "~/é/x",
+            "multi-byte first letter"
+        );
+    }
 
     #[test]
     fn suite_queue_keeps_order_and_skips_duplicates() {

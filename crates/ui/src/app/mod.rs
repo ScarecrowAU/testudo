@@ -16,6 +16,8 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::searchable_list::SearchableVec;
+use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::separator::Separator;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::table::{DataTable, TableState};
@@ -40,7 +42,7 @@ use crate::logic::{
     fmt_time, grid_tiles, looks_like_failure, pane_grid, pane_name, rerun_args, row_state, skip_startup_scan,
     status_icon, status_label, summary_line, terminal_lines, test_order, tilde, truncate, url_path, with_line,
 };
-use crate::logic::{file_lines, file_status, log_lines, log_tests};
+use crate::logic::{file_lines, file_status, fish_shorten, log_lines, log_tests, worktree_path};
 use crate::model::{Model, Page, PageKey, Source};
 use crate::state::{InspectorTab, LogFocus, PageFocus, PagesView, Replay, Retired, StreamFilter};
 
@@ -134,6 +136,8 @@ pub struct TestudoApp {
     worktrees: Option<Worktrees>,
     /// Index into `worktrees.list` of the worktree being scanned and run.
     worktree: usize,
+    /// The searchable worktree selector; its items follow `worktrees`.
+    worktree_select: Entity<WorktreeSelect>,
     picking: bool,
 
     /// Frames replaced since the last render; freed with `drop_image` there.
@@ -182,7 +186,16 @@ impl TestudoApp {
         });
         let filter_input = cx.new(|cx| InputState::new(window, cx).placeholder("filter output"));
         let net_search = cx.new(|cx| InputState::new(window, cx).placeholder("search URLs"));
+        let worktree_select =
+            cx.new(|cx| SelectState::new(SearchableVec::new(Vec::new()), None, window, cx).searchable(true));
         let subscriptions = vec![
+            cx.subscribe_in(&worktree_select, window, |this, _, ev: &SelectEvent<_>, window, cx| {
+                if let SelectEvent::Confirm(Some(i)) = ev
+                    && *i != this.worktree
+                {
+                    this.select_worktree(*i, window, cx);
+                }
+            }),
             cx.subscribe_in(&project_input, window, |this, _, ev: &InputEvent, window, cx| {
                 if matches!(ev, InputEvent::PressEnter { .. }) {
                     this.scan(window, cx);
@@ -249,6 +262,7 @@ impl TestudoApp {
             scanned: None,
             worktrees: None,
             worktree: 0,
+            worktree_select,
             picking: false,
             retired: Vec::new(),
             last_render: Instant::now(),
@@ -376,6 +390,57 @@ impl TestudoApp {
         #[cfg(debug_assertions)]
         if std::env::var_os("TESTUDO_DEBUG_CHECK_UPDATES").is_some() {
             app.check_for_updates(cx);
+        }
+        // Test hook (debug builds only): click at window points "x,y;x,y…",
+        // the first two seconds after start and the rest a second apart, to
+        // capture menus and popovers in screenshots.
+        #[cfg(debug_assertions)]
+        if let Ok(points) = std::env::var("TESTUDO_DEBUG_CLICK") {
+            let points: Vec<Point<Pixels>> = points
+                .split(';')
+                .filter_map(|p| {
+                    let (x, y) = p.split_once(',')?;
+                    Some(point(px(x.trim().parse().ok()?), px(y.trim().parse().ok()?)))
+                })
+                .collect();
+            cx.spawn_in(window, async move |_, cx| {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                for position in points {
+                    cx.background_executor().timer(Duration::from_secs(1)).await;
+                    let _ = cx.update(|window, cx| {
+                        let modifiers = Modifiers::default();
+                        let button = MouseButton::Left;
+                        window.dispatch_event(
+                            PlatformInput::MouseMove(MouseMoveEvent {
+                                position,
+                                pressed_button: None,
+                                modifiers,
+                            }),
+                            cx,
+                        );
+                        window.dispatch_event(
+                            PlatformInput::MouseDown(MouseDownEvent {
+                                button,
+                                position,
+                                modifiers,
+                                click_count: 1,
+                                first_mouse: false,
+                            }),
+                            cx,
+                        );
+                        window.dispatch_event(
+                            PlatformInput::MouseUp(MouseUpEvent {
+                                button,
+                                position,
+                                modifiers,
+                                click_count: 1,
+                            }),
+                            cx,
+                        );
+                    });
+                }
+            })
+            .detach();
         }
         #[cfg(debug_assertions)]
         if std::env::var_os("TESTUDO_DEBUG_OPEN_PICKER").is_some() {
@@ -557,6 +622,21 @@ impl TestudoApp {
             self.project_input.update(cx, |s, cx| s.set_value(shown, window, cx));
         }
         let dir = wts.dir(self.worktree);
+        let items = wts
+            .list
+            .iter()
+            .enumerate()
+            .map(|(ix, w)| WorktreeItem {
+                ix,
+                branch: w.label().into(),
+                path: worktree_path(&w.path, &wts.main().path).into(),
+            })
+            .collect::<Vec<_>>();
+        let selected = self.worktree;
+        self.worktree_select.update(cx, |s, cx| {
+            s.set_items(SearchableVec::new(items), window, cx);
+            s.set_selected_value(&selected, window, cx);
+        });
         self.worktrees = Some(wts);
         dir
     }
@@ -1167,47 +1247,101 @@ fn skip_card(note: String, theme: &gpui_kit::component::Theme) -> Div {
         )
 }
 
+/// Widest a worktree row gets before its branch and path are truncated.
+const WORKTREE_ROW_MAX_W: f32 = 360.;
+
+type WorktreeSelect = SelectState<SearchableVec<WorktreeItem>>;
+
+/// One worktree in the selector: its branch over its directory.
+#[derive(Clone)]
+struct WorktreeItem {
+    /// Index into `Worktrees::list`.
+    ix: usize,
+    branch: SharedString,
+    path: SharedString,
+}
+
+impl SelectItem for WorktreeItem {
+    type Value = usize;
+
+    fn title(&self) -> SharedString {
+        self.branch.clone()
+    }
+
+    /// The trigger: a branch icon and the branch, like a branch button.
+    fn display_title(&self) -> Option<AnyElement> {
+        Some(
+            h_flex()
+                .gap_1()
+                .min_w_0()
+                .child(Icon::new(media_icon("git-branch")).xsmall())
+                .child(div().truncate().child(self.branch.clone()))
+                .into_any_element(),
+        )
+    }
+
+    /// Two lines, branch over path. A long branch ends in an ellipsis past
+    /// `WORKTREE_ROW_MAX_W`; a long path has its folders shortened fish-style
+    /// from the left first, and only then an ellipsis.
+    fn render(&self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let font_size = rems(0.75).to_pixels(window.rem_size());
+        let font = window.text_style().font();
+        let max = px(WORKTREE_ROW_MAX_W);
+        let fits = |s: &str| {
+            let run = TextRun {
+                len: s.len(),
+                font: font.clone(),
+                color: Hsla::default(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            window
+                .text_system()
+                .shape_line(SharedString::from(s.to_owned()), font_size, &[run], None)
+                .width
+                <= max
+        };
+        let path = fish_shorten(&self.path, fits);
+        v_flex()
+            .max_w(px(WORKTREE_ROW_MAX_W))
+            .overflow_hidden()
+            .py_0p5()
+            .child(div().truncate().child(self.branch.clone()))
+            .child(
+                div()
+                    .truncate()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(path),
+            )
+    }
+
+    fn value(&self) -> &usize {
+        &self.ix
+    }
+
+    /// The search matches the branch or the path.
+    fn matches(&self, query: &str) -> bool {
+        let q = query.to_lowercase();
+        self.branch.to_lowercase().contains(&q) || self.path.to_lowercase().contains(&q)
+    }
+}
+
 impl TestudoApp {
     /// Worktree selector beside the project directory: the selected worktree's
-    /// branch, opening a menu of all of them. Only when there are linked ones.
-    fn worktree_menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        let wts = self.worktrees.as_ref()?;
-        let selected = self.worktree.min(wts.list.len() - 1);
-        let items: Vec<(usize, String)> = wts
-            .list
-            .iter()
-            .enumerate()
-            .map(|(i, w)| {
-                // Linked worktrees inside the main one by their path within it.
-                let place = match w.path.strip_prefix(&wts.main().path) {
-                    _ if i == 0 => "main worktree".to_owned(),
-                    Ok(rel) => rel.display().to_string(),
-                    Err(_) => tilde(&w.path),
-                };
-                (i, format!("{} · {place}", w.label()))
-            })
-            .collect();
-        let app = cx.entity().downgrade();
+    /// branch, opening a searchable list of all of them. Only when there are
+    /// linked ones.
+    fn worktree_menu(&self, _cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        self.worktrees.as_ref()?;
         Some(
-            button("worktree")
-                .icon(media_icon("git-branch"))
-                .label(wts.list[selected].label())
-                .small()
-                .outline()
-                .dropdown_caret(true)
-                .tooltip(format!("Worktree: {}", tilde(&wts.list[selected].path)))
-                .dropdown_menu(move |mut menu, _, _| {
-                    menu = menu.label("Git worktree");
-                    for (i, text) in &items {
-                        let (app, i) = (app.clone(), *i);
-                        menu = menu.item(PopupMenuItem::new(text.clone()).checked(i == selected).on_click(
-                            move |_, window, cx| {
-                                let _ = app.update(cx, |this, cx| this.select_worktree(i, window, cx));
-                            },
-                        ));
-                    }
-                    menu
-                }),
+            div().flex_none().w(px(180.)).child(
+                Select::new(&self.worktree_select)
+                    .small()
+                    .menu_width(px(WORKTREE_ROW_MAX_W + 48.))
+                    .search_placeholder("Search branches and paths")
+                    .accessibility_label("Git worktree"),
+            ),
         )
     }
 }
