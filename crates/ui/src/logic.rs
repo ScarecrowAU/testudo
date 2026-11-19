@@ -191,9 +191,7 @@ pub fn file_lines(tests: &[&Test], max: usize) -> Vec<(TermKind, String)> {
         let (icon, kind) = match t.status {
             _ if t.queued => ("·", TermKind::Note),
             None => ("›", TermKind::Stdout),
-            Some(TestStatus::Passed) => ("✔", TermKind::Passed),
-            Some(TestStatus::Failed | TestStatus::TimedOut) => ("✘", TermKind::Error),
-            Some(s) => (status_icon(Some(s)).0, TermKind::Note),
+            Some(s) => mono_icon(s),
         };
         if kind == TermKind::Error && first_failure.is_none() {
             first_failure = Some(lines.len());
@@ -252,9 +250,7 @@ pub fn log_lines(tests: &[&Test]) -> Vec<(TermKind, String)> {
         let (icon, kind) = match t.status {
             _ if t.queued => ("·", TermKind::Note),
             None => ("›", TermKind::Stdout),
-            Some(TestStatus::Passed) => ("✔", TermKind::Passed),
-            Some(TestStatus::Failed | TestStatus::TimedOut) => ("✘", TermKind::Error),
-            Some(s) => (status_icon(Some(s)).0, TermKind::Note),
+            Some(s) => mono_icon(s),
         };
         let state = match (t.queued, t.status, t.duration_ms) {
             (true, ..) => "pending".to_owned(),
@@ -270,7 +266,7 @@ pub fn log_lines(tests: &[&Test]) -> Vec<(TermKind, String)> {
         if t.output.is_empty() {
             for s in &t.steps {
                 lines.push(match s.error {
-                    Some(_) => (TermKind::StepFailed, format!("  ✘ {}", s.title)),
+                    Some(_) => (TermKind::StepFailed, format!("  × {}", s.title)),
                     None => (TermKind::Step, format!("  › {}", s.title)),
                 });
             }
@@ -292,6 +288,18 @@ pub fn log_lines(tests: &[&Test]) -> Vec<(TermKind, String)> {
     lines
 }
 
+/// A finished test's mark in monospace text (tiles, the log view), from
+/// characters the mono font has: it has no ✔ or ✘.
+fn mono_icon(status: TestStatus) -> (&'static str, TermKind) {
+    match status {
+        TestStatus::Passed => ("✓", TermKind::Passed),
+        TestStatus::Failed | TestStatus::TimedOut => ("×", TermKind::Error),
+        TestStatus::Skipped => ("-", TermKind::Note),
+        TestStatus::Interrupted => ("!", TermKind::Note),
+        TestStatus::Unknown => ("?", TermKind::Note),
+    }
+}
+
 /// How a terminal tile line is coloured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TermKind {
@@ -311,7 +319,7 @@ pub fn terminal_lines(t: &Test, max: usize) -> Vec<(TermKind, String)> {
         t.steps
             .iter()
             .map(|s| match s.error {
-                Some(_) => (TermKind::StepFailed, format!("✘ {}", s.title)),
+                Some(_) => (TermKind::StepFailed, format!("× {}", s.title)),
                 None => (TermKind::Step, format!("› {}", s.title)),
             })
             .collect()
@@ -1160,13 +1168,13 @@ mod tests {
         assert_eq!(
             file_lines(&a, 10),
             [
-                (TermKind::Passed, "✔ a1".to_owned()),
-                (TermKind::Error, "✘ a2".to_owned()),
+                (TermKind::Passed, "✓ a1".to_owned()),
+                (TermKind::Error, "× a2".to_owned()),
                 (TermKind::Error, "  expected 1".to_owned()),
             ]
         );
         // Short on room: start at the first failure.
-        assert_eq!(file_lines(&a, 2)[0].1, "✘ a2");
+        assert_eq!(file_lines(&a, 2)[0].1, "× a2");
 
         // c starts: its file is running, its queued test listed as pending.
         m.apply("r1", 3.0, begin("c1"));
@@ -1212,11 +1220,11 @@ mod tests {
         assert_eq!(
             text,
             [
-                "✔ a (passed)",
+                "✓ a (passed)",
                 "  Group",
                 "  hi",
                 "",
-                "✘ c (failed)",
+                "× c (failed)",
                 "  Group",
                 "  one",
                 "  two",

@@ -6,7 +6,7 @@
 
 Native GUI test runner that controls, monitors and reports on multiple concurrent test suites, with live views of the headless browsers they drive. Every run is recorded so you can scrub through it, compare it with earlier runs and spot flaky tests. Nothing is installed into or written to your project.
 
-![Testudo running a Playwright suite: one test still running in a live browser page, finished pages beside it, the tests in the sidebar and runner output below](docs/screenshots/live.png)
+![Testudo running a Playwright suite: three tests running in live browser pages, finished pages beside them, the running tests in the sidebar, a Vitest suite queued behind it and runner output below](docs/screenshots/live.png)
 
 ## Compatibility
 
@@ -38,6 +38,10 @@ Runs on Linux and macOS.
 **Compare with up to 5 earlier runs** of the same test, played side by side and aligned by step:
 
 ![Comparison: this run and three earlier runs of the same test in a grid, aligned by step](docs/screenshots/compare.png)
+
+**Unit tests without a browser** get a tile per test file, with each test's result and what it printed; click one to read its whole log:
+
+![A Vitest run: one tile per test file listing its tests, their times and their console output](docs/screenshots/unit-tests.png)
 
 **History** of every run, with pass rate, flaky tests and a timeline you can replay:
 
@@ -172,7 +176,7 @@ The adapters in `adapters/js` are injected through the runner's command line and
 | `crates/cli` | `testudo-cli`. |
 | `crates/update` | Update checks and in-place installs from releases or `main`. |
 | `adapters/js` | Zero-dependency Node adapters. |
-| `examples/` | Playwright and Vitest-browser demo projects. |
+| `examples/` | Demo projects: `acme-shop` (Playwright and Vitest, used for the screenshots), Playwright and Vitest browser mode. |
 
 ## Developing
 

@@ -1355,8 +1355,9 @@ impl Render for TestudoApp {
         if self.perf.frame_end(frame_start, ctx) {
             window.request_animation_frame();
         }
-        v_flex()
-            .id("testudo")
+        let mut root = v_flex();
+        root.text_style().font_fallbacks = crate::fonts::fallbacks();
+        root.id("testudo")
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
@@ -1613,10 +1614,12 @@ impl TestudoApp {
                             .when(!s.runnable(), |d| d.text_color(muted))
                             .child(s.name.clone()),
                     )
+                    // Queued: its place and buttons need the room more.
                     .children(
                         s.tool
                             .as_ref()
                             .and_then(|t| t.version.clone())
+                            .filter(|_| queued.is_none())
                             .map(|v| div().text_xs().text_color(muted).child(v)),
                     )
                     .when(!s.warnings.is_empty(), |d| {

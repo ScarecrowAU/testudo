@@ -26,12 +26,20 @@ make dev ARGS="~/dev/some-app --run playwright"  # args are passed to testudo
 
 `make dev` only restarts the app after a successful build, so a compile error keeps the current window. Edits to `adapters/js` need no restart; every run loads them fresh. The app's log is in `target/dev/testudo.log`.
 
-`examples/playwright-demo` and `examples/vitest-browser-demo` are small projects to point Testudo at:
+The projects in `examples/` are for pointing Testudo at:
+
+- `acme-shop`: a small shop with a Playwright end-to-end suite (pages served offline at `https://acme.shop/`) and a Vitest unit suite (one tile per test file). The README screenshots come from it.
+- `playwright-demo`: three bare Playwright tests, one of them failing on purpose.
+- `vitest-browser-demo`: Vitest browser mode, the setup Storybook's addon-vitest uses.
 
 ```sh
+(cd examples/acme-shop && npm install && npx playwright install chromium-headless-shell)
 (cd examples/playwright-demo && npm install && npx playwright install chromium-headless-shell)
 (cd examples/vitest-browser-demo && npm install)
+make dev ARGS="examples/acme-shop --run all"
 ```
+
+To retake the README screenshots after a UI change, run `make screenshots` (or `scripts/screenshots.sh live focus` for just some). It needs Linux with KDE Plasma 6: each shot runs in a headless KWin session and is captured with Spectacle, under a throwaway home so no real paths or history show. If the live shots catch the wrong moment on your machine, tune `LIVE_WAIT` and `UNIT_WAIT`.
 
 ## Before opening a pull request
 
