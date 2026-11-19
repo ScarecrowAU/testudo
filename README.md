@@ -92,7 +92,7 @@ Suites run one at a time: **Run all** (or ▶ while a run is going) queues them,
 
 In the live view, the sidebar lists each run with its counts and the tests running right now; click a run to show its results in the grid. Tests that open no browser page get a tile showing their output and error instead: one per test (API tests, setup projects), or one per test file for plain Vitest. Click such a tile to read its whole log. **Hide completed** leaves completed tests out of the grid (failures stay); untick it to bring them back.
 
-The focus view's ↻ button re-runs that one test in place: the new run's page replaces the current one when it opens, keeping the tab and any comparison.
+A finished run's ↻ button runs its suite again. The focus view's ↻ button re-runs that one test in place: the new run's page replaces the current one when it opens, keeping the tab and any comparison. Both reuse the runner arguments the run was started with.
 
 In the focus view: wheel scrubs, Shift+wheel or ←/→ steps one frame, Space plays or pauses, Esc returns to the grid. Stopping a run (button, closing the window, Ctrl+C) lets the runner tear down cleanly before anything is killed.
 

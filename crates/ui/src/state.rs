@@ -863,6 +863,7 @@ mod tests {
             runner: "playwright".into(),
             cwd: "/x".into(),
             args: vec![],
+            user_args: None,
         };
         view.apply(run, at, started);
         let opened = Event::PageOpened {

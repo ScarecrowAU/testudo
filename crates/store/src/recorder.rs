@@ -161,6 +161,7 @@ impl Writer {
                 runner,
                 cwd,
                 args,
+                ..
             } => {
                 c.execute(
                     "UPDATE runs SET label = ?2, runner = ?3, cwd = ?4, args = ?5, started_at = ?6 WHERE id = ?1",

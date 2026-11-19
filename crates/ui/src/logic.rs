@@ -1007,6 +1007,7 @@ mod tests {
                 runner: "playwright".into(),
                 cwd: "/p".into(),
                 args: vec![],
+                user_args: None,
             },
         );
         m.apply("r1", 0.0, begin("api"));
@@ -1055,6 +1056,7 @@ mod tests {
                 runner: "vitest".into(),
                 cwd: "/p".into(),
                 args: vec![],
+                user_args: None,
             },
         );
         m.apply(
@@ -1116,6 +1118,7 @@ mod tests {
                 runner: "vitest".into(),
                 cwd: "/p".into(),
                 args: vec![],
+                user_args: None,
             },
         );
         let queued = |id: &str, file: &str| Event::TestQueued {

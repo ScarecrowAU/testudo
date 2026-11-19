@@ -76,6 +76,7 @@ fn recorder_persists_events_frames_and_summary() {
             runner: "playwright".into(),
             cwd: "/x".into(),
             args: vec![],
+            user_args: None,
         }),
     );
     hub.publish(

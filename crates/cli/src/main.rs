@@ -160,7 +160,8 @@ async fn run(args: &[String], data: &std::path::Path) -> Result<i32> {
             },
             cwd: dir.clone(),
             config: None,
-            args: runner_args,
+            args: runner_args.clone(),
+            user_args: runner_args,
             env: vec![],
         }],
         None => {

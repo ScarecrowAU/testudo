@@ -628,25 +628,87 @@ impl TestudoApp {
 
     #[tracing::instrument(level = "info", skip_all, fields(suite = %suite.name))]
     fn start_suite(&mut self, suite: &Suite, cx: &mut Context<Self>) {
-        let args = self
-            .args_input
+        let args = self.user_args(cx);
+        self.launch(suite, args, cx);
+    }
+
+    /// The runner args typed in the top bar.
+    fn user_args(&self, cx: &App) -> Vec<String> {
+        self.args_input
             .read(cx)
             .value()
             .split_whitespace()
             .map(str::to_owned)
-            .collect();
+            .collect()
+    }
+
+    /// Start `suite` now with `args` and show it. Returns the run's id.
+    fn launch(&mut self, suite: &Suite, args: Vec<String>, cx: &mut Context<Self>) -> Option<RunId> {
         let started = RunSpec::for_suite(suite, args).and_then(|spec| self.orchestrator.start(spec));
+        cx.notify();
         match started {
             Ok(handle) => {
-                self.live
-                    .select_run(&handle.id, self.store.as_deref(), &mut self.retired);
-                self.handles.insert(handle.id.clone(), handle);
+                let id = handle.id.clone();
+                self.live.select_run(&id, self.store.as_deref(), &mut self.retired);
+                self.handles.insert(id.clone(), handle);
                 self.mode = Mode::Live;
                 self.error = None;
+                Some(id)
             }
-            Err(e) => self.error = Some(format!("{}: {e:#}", suite.name)),
+            Err(e) => {
+                self.error = Some(format!("{}: {e:#}", suite.name));
+                None
+            }
         }
-        cx.notify();
+    }
+
+    /// Run a finished run again: same suite, same runner args.
+    fn rerun_run(&mut self, w: Which, run_id: &str, cx: &mut Context<Self>) {
+        let Some(run) = self.view(w).and_then(|v| v.model.run(run_id)) else {
+            return;
+        };
+        let target = self.run_suite(run).map(|s| (s, self.run_args(run, cx)));
+        match target {
+            Ok((suite, args)) => {
+                self.launch(&suite, args, cx);
+            }
+            Err(e) => {
+                self.error = Some(format!("Can't re-run this suite: {e}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// The runner args `run` was started with; the args box for runs
+    /// recorded before those were kept.
+    fn run_args(&self, run: &crate::model::Run, cx: &App) -> Vec<String> {
+        run.user_args.clone().unwrap_or_else(|| self.user_args(cx))
+    }
+
+    /// The suite `run` ran: among the scanned suites, else found again in
+    /// the run's own directory (a History run from another project). A
+    /// directory can hold several suites of one runner (two Playwright
+    /// configs): the run's label names the right one.
+    fn run_suite(&self, run: &crate::model::Run) -> Result<Suite, String> {
+        let same_dir = |a: &std::path::Path| {
+            a.canonicalize()
+                .ok()
+                .zip(std::path::Path::new(&run.cwd).canonicalize().ok())
+                .is_some_and(|(a, b)| a == b)
+        };
+        let matches = |s: &Suite| s.kind.runner().is_some_and(|k| k.name() == run.runner) && same_dir(&s.dir);
+        let labelled = |s: &Suite| matches(s) && s.name == run.label;
+        if let Some(s) = self.suites.iter().find(|s| labelled(s)) {
+            return Ok(s.clone());
+        }
+        let found = discover(std::path::Path::new(&run.cwd));
+        found
+            .iter()
+            .find(|s| labelled(s))
+            .or_else(|| found.iter().find(|s| matches(s)))
+            .or_else(|| self.suites.iter().find(|s| matches(s)))
+            .cloned()
+            .ok_or_else(|| format!("no {} suite found in {}", run.runner, run.cwd))
     }
 
     /// The suite and arguments to run just the focused page's test again, or
@@ -664,33 +726,13 @@ impl TestudoApp {
         };
         let mut args = rerun_args(&run.runner, &run.cwd, file, line, test.project.as_deref())
             .ok_or_else(|| format!("re-running single tests isn't supported for {}", run.runner))?;
-        let same_dir = |a: &std::path::Path| {
-            a.canonicalize()
-                .ok()
-                .zip(std::path::Path::new(&run.cwd).canonicalize().ok())
-                .is_some_and(|(a, b)| a == b)
-        };
-        let matches = |s: &Suite| s.kind.runner().is_some_and(|k| k.name() == run.runner) && same_dir(&s.dir);
-        let suite = self
-            .suites
-            .iter()
-            .find(|s| matches(s))
-            .cloned()
-            .or_else(|| {
-                discover(std::path::Path::new(&run.cwd))
-                    .into_iter()
-                    .find(|s| matches(s))
-            })
-            .ok_or_else(|| format!("no {} suite found in {}", run.runner, run.cwd))?;
-        let mut user: Vec<String> = self
-            .args_input
-            .read(cx)
-            .value()
-            .split_whitespace()
-            .map(str::to_owned)
-            .collect();
-        user.append(&mut args);
-        Ok((suite, user))
+        let suite = self.run_suite(run)?;
+        // The args the run had, narrowed to this test (a run that was itself
+        // a re-run of it already has the filter).
+        let mut all = self.run_args(run, cx);
+        args.retain(|a| !all.contains(a));
+        all.append(&mut args);
+        Ok((suite, all))
     }
 
     /// Run the focused page's test again and watch it in the same focus view:
@@ -706,18 +748,12 @@ impl TestudoApp {
                 return;
             }
         };
-        let started = RunSpec::for_suite(&suite, args).and_then(|spec| self.orchestrator.start(spec));
-        match started {
-            Ok(handle) => {
-                self.follow_run = Some((handle.id.clone(), w));
-                self.live
-                    .select_run(&handle.id, self.store.as_deref(), &mut self.retired);
-                self.handles.insert(handle.id.clone(), handle);
-                self.error = None;
-            }
-            Err(e) => self.error = Some(format!("{}: {e:#}", suite.name)),
+        let mode = self.mode;
+        if let Some(id) = self.launch(&suite, args, cx) {
+            self.follow_run = Some((id, w));
+            // The focus stays where it is until the new page opens.
+            self.mode = mode;
         }
-        cx.notify();
     }
 
     #[tracing::instrument(level = "info", skip(self))]
@@ -1900,14 +1936,27 @@ impl TestudoApp {
                                 cx.notify();
                             }),
                         ));
-                    } else if !run.is_running() && self.store.is_some() {
-                        let id = run.id.clone();
-                        header = header.child(button(("replay", ri)).label("Replay").xsmall().ghost().on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                this.open_replay(&id);
-                                cx.notify();
-                            }),
-                        ));
+                    } else if !run.is_running() {
+                        if matches!(run.runner.as_str(), "playwright" | "vitest") {
+                            let id = run.id.clone();
+                            header = header.child(
+                                button(("rerun-run", ri))
+                                    .icon(media_icon("rotate-ccw"))
+                                    .xsmall()
+                                    .ghost()
+                                    .tooltip("Run this suite again, with the same arguments")
+                                    .on_click(cx.listener(move |this, _, _, cx| this.rerun_run(w, &id, cx))),
+                            );
+                        }
+                        if self.store.is_some() {
+                            let id = run.id.clone();
+                            header = header.child(button(("replay", ri)).label("Replay").xsmall().ghost().on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    this.open_replay(&id);
+                                    cx.notify();
+                                }),
+                            ));
+                        }
                     }
                 }
                 header.into_any_element()

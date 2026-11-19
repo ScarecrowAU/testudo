@@ -39,6 +39,9 @@ pub struct Run {
     /// RunStarted: enough to find the suite again to re-run a test.
     pub runner: String,
     pub cwd: String,
+    /// The runner args the user started it with (None in old recordings):
+    /// a re-run passes them again.
+    pub user_args: Option<Vec<String>>,
 }
 
 impl Run {
@@ -197,6 +200,7 @@ impl Model {
             output: Vec::new(),
             runner: String::new(),
             cwd: String::new(),
+            user_args: None,
         });
         self.runs.last_mut().unwrap()
     }
@@ -495,10 +499,17 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
                 MAX_LINES,
             )
         }
-        Event::RunStarted { label, runner, cwd, .. } => {
+        Event::RunStarted {
+            label,
+            runner,
+            cwd,
+            user_args,
+            ..
+        } => {
             run.label = label;
             run.runner = runner;
             run.cwd = cwd;
+            run.user_args = user_args;
         }
         Event::ProcessExited { code } => run.exit = Some(code),
         Event::Hello { .. } => {}

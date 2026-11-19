@@ -56,6 +56,8 @@ pub struct RunSpec {
     /// Explicit config file (`-c` for Playwright, `--config` for Vitest).
     pub config: Option<PathBuf>,
     pub args: Vec<String>,
+    /// The part of `args` the user gave (after the project config's).
+    pub user_args: Vec<String>,
     /// Extra environment for the runner (project config rules). Testudo's own
     /// variables still win; `NODE_OPTIONS` and `PATH` are combined with them.
     pub env: Vec<(String, String)>,
@@ -77,7 +79,8 @@ impl RunSpec {
             kind,
             cwd: suite.dir.clone(),
             config: suite.config.clone(),
-            args: rc.args.into_iter().chain(args).collect(),
+            args: rc.args.into_iter().chain(args.iter().cloned()).collect(),
+            user_args: args,
             env: rc.env,
         })
     }
@@ -300,6 +303,7 @@ impl Orchestrator {
                 runner: spec.kind.name().to_owned(),
                 cwd: cwd.display().to_string(),
                 args: spec.args.clone(),
+                user_args: Some(spec.user_args.clone()),
             }),
         );
         for line in notes {
