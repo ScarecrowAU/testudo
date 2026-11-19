@@ -15,7 +15,7 @@
 # Environment:
 #   TESTUDO_BIN, TESTUDO_CLI   binaries to use, a fresh debug build by default
 #   LIVE_WAIT, UNIT_WAIT       seconds to wait before the live and unit-tests
-#                              captures, 2.6 and 4 by default. Raise them on
+#                              captures, 2.9 and 4 by default. Raise them on
 #                              slower machines.
 #   OUT                        where the PNGs go, docs/screenshots by default
 #   KEEP=1                     keep the throwaway HOME and logs afterwards
@@ -113,7 +113,7 @@ for s in "${shots[@]}"; do
         capture compare 9 "$dir" --replay "$run" --at 5 --focus "$page" || status=1
       ;;
     history) capture history 8 "$dir" --replay "$run" --at 2.2 || status=1 ;;
-    live) capture live "${LIVE_WAIT:-2.6}" "$dir" --run all || status=1 ;;
+    live) capture live "${LIVE_WAIT:-2.9}" "$dir" --run all || status=1 ;;
     unit-tests) capture unit-tests "${UNIT_WAIT:-4}" "$dir" --run vitest || status=1 ;;
     *) echo "screenshots: unknown shot $s" >&2; status=1 ;;
   esac
