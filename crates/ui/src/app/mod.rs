@@ -477,7 +477,7 @@ impl TestudoApp {
         if let Some(store) = &self.store {
             match store.list_runs(HISTORY_LIMIT) {
                 Ok(rows) => self.history = rows,
-                Err(e) => self.error = Some(format!("reading history: {e:#}")),
+                Err(e) => self.error = Some(format!("Couldn't read history: {e:#}")),
             }
             self.flaky = store.flaky_tests(SUMMARY_RUNS).unwrap_or_default();
         }
@@ -759,7 +759,7 @@ impl TestudoApp {
     #[tracing::instrument(level = "info", skip(self))]
     fn open_replay(&mut self, run_id: &str) {
         let Some(store) = &self.store else {
-            self.error = Some("history unavailable: store failed to open".into());
+            self.error = Some("History is unavailable because its store failed to open.".into());
             return;
         };
         match Replay::load(store, run_id) {
@@ -1450,7 +1450,7 @@ impl TestudoApp {
                     Checkbox::new("hide-completed")
                         .cursor_pointer()
                         .label("Hide completed")
-                        .tooltip("Leave completed tests out of the grid (failures stay)")
+                        .tooltip("Leave completed tests out of the grid, except failures")
                         .checked(self.live.hide_completed)
                         .on_click(cx.listener(|this, checked: &bool, _, cx| {
                             this.live.hide_completed = *checked;
@@ -1566,7 +1566,7 @@ impl TestudoApp {
                 div()
                     .text_sm()
                     .text_color(muted)
-                    .child("Choose a project folder, or press Scan to search this one."),
+                    .child("Choose a project directory, or press Scan to search this one."),
             );
         } else if self.scanned.is_some() && self.suites.is_empty() {
             col = col.child(
@@ -1595,7 +1595,7 @@ impl TestudoApp {
                             .when(!s.runnable() || queued.is_some(), |b| b.cursor_default())
                             .when(s.runnable() && queued.is_none(), |b| {
                                 b.tooltip(if busy {
-                                    "Queue: runs when the current run finishes"
+                                    "Queue this suite. It runs when the current run finishes"
                                 } else {
                                     "Run"
                                 })
@@ -2073,9 +2073,9 @@ impl TestudoApp {
                                     _ => '·',
                                 })
                                 .collect();
-                            text.push_str(&format!("\n\nlast {} runs (oldest → newest): {strip}", history.len()));
+                            text.push_str(&format!("\n\nlast {} runs, oldest first: {strip}", history.len()));
                             if strip.contains('✔') && strip.contains('✘') {
-                                text.push_str("\nflaky: both passes and failures in recent history");
+                                text.push_str("\nflaky: passed in some recent runs and failed in others");
                             }
                         }
                         Tooltip::new(text).build(window, cx)
@@ -2374,7 +2374,7 @@ impl TestudoApp {
                     format!("{title}\nskipped: {}\nclick to open", summary_line(note))
                 }
                 _ => format!(
-                    "{title}\n{}\nclick to open: watch live, or scrub the recording",
+                    "{title}\n{}\nclick to open, then watch live or scrub the recording",
                     page.url
                 ),
             }))
@@ -2506,7 +2506,7 @@ impl TestudoApp {
             if let Some(f) = &t.file {
                 lines.push(with_line(f, t.line));
             }
-            lines.push("no browser page: shows the test's output".into());
+            lines.push("This test opened no browser page, so the tile shows its output".into());
             lines.push("click to read the whole log".into());
             lines.join("\n")
         };
@@ -2914,7 +2914,7 @@ impl TestudoApp {
                     .xsmall()
                     .when(follow, |b| b.primary())
                     .when(!follow, |b| b.ghost())
-                    .tooltip("Follow new output (turns off when you scroll up)")
+                    .tooltip("Follow new output. Scrolling up turns this off")
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(v) = this.view_mut(w) {
                             v.output_follow = !v.output_follow;
@@ -3330,7 +3330,7 @@ impl TestudoApp {
                         .h(px(26.)),
                     )
                     .tooltip(tooltip_text(format!(
-                        "duration of the last {spark_n} runs, oldest → newest; colour = result"
+                        "Duration of the last {spark_n} runs, oldest first. The colour shows each run's result"
                     ))),
             )
     }
@@ -3440,7 +3440,7 @@ impl TestudoApp {
                         Checkbox::new("tl-hide-completed")
                             .cursor_pointer()
                             .label("Hide completed")
-                            .tooltip("Leave completed tests out of the grid (failures stay)")
+                            .tooltip("Leave completed tests out of the grid, except failures")
                             .checked(hide_completed)
                             .on_click(cx.listener(|this, checked: &bool, _, cx| {
                                 if let Some(r) = this.replay.as_mut() {

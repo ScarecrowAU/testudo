@@ -5,7 +5,7 @@ labels: [runner support]
 body:
   - type: markdown
     attributes:
-      value: Check the compatibility table in the README first. Requests for runners already listed as planned are still useful: your setup details help decide what to support first.
+      value: Check the compatibility table in the README first. Requests for runners already listed as planned are still useful. Your setup details help decide what to support first.
   - type: input
     id: runner
     attributes:
@@ -27,6 +27,6 @@ body:
     id: details
     attributes:
       label: How do you run it?
-      description: Config files, commands and anything unusual about your setup (monorepo, custom reporters).
+      description: Config files, commands and anything unusual about your setup, such as a monorepo or custom reporters.
     validations:
       required: true

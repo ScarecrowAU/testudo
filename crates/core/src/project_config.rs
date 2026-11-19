@@ -78,14 +78,14 @@ struct Rule {
 // The JSON Schema (`schemas/testudo-config.schema.json`) is generated from
 // these types and their doc comments; see `tests::schema_is_up_to_date`.
 
-/// Testudo project config (`.testudo/config.json`, JSON5): rules that give
-/// test runs extra environment variables and arguments.
+/// Testudo project config in `.testudo/config.json`, written in JSON5. Its
+/// rules give test runs extra environment variables and arguments.
 #[derive(Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[cfg_attr(test, schemars(title = "Testudo project config"))]
 #[serde(deny_unknown_fields)]
 struct RawFile {
-    /// JSON Schema reference for editors; ignored by Testudo.
+    /// JSON Schema reference for editors. Testudo ignores it.
     #[serde(default, rename = "$schema")]
     #[allow(dead_code)]
     schema: Option<String>,
@@ -107,7 +107,8 @@ struct RawRule {
     /// Without it the rule is global.
     #[serde(default)]
     path: Option<String>,
-    /// The runner(s) this rule applies to. Default: all.
+    /// The runners this rule applies to. Without it, the rule applies to all
+    /// runners.
     #[serde(default)]
     #[cfg_attr(test, schemars(with = "Option<schema::Runners>"))]
     runner: Option<OneOrMany>,
@@ -115,15 +116,15 @@ struct RawRule {
     /// Overrides values from this rule's `env_file`.
     #[serde(default)]
     env: BTreeMap<String, Scalar>,
-    /// A `.env` file (KEY=value lines), relative to the folder holding
-    /// `.testudo`. Must exist when the rule applies.
+    /// A `.env` file of KEY=value lines, relative to the folder holding
+    /// `.testudo`. It must exist when the rule applies.
     #[serde(default)]
     env_file: Option<String>,
     /// Runner arguments, appended: global rules, then local rules, then the
     /// runner args typed in the GUI or given after `--`.
     #[serde(default)]
     args: Vec<String>,
-    /// On a local rule (with `path`): drop the global rules' `args` for
+    /// On a local rule, one with `path`, drop the global rules' `args` for
     /// matching suites.
     #[serde(default, rename = "replaceGlobalArgs", alias = "replace_global_args")]
     replace_global_args: bool,

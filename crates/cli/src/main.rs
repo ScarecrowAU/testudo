@@ -22,16 +22,16 @@ use testudo_store::{Recorder, Retention, Store, default_data_dir};
 const USAGE: &str = "usage:
   testudo-cli suites <dir>                 list the test suites found under <dir>
   testudo-cli run [FILTER...] <dir> [--no-record] [--quiet] [-- runner args...]
-                                           run discovered suites (all runnable ones, or those
-                                           matching a FILTER: playwright, vitest, or part of a name)
+                                           run the discovered suites, or only those matching a
+                                           FILTER: playwright, vitest or part of a suite name
   testudo-cli run cmd:PROGRAM <dir> [-- args...]
   testudo-cli history [--limit N]
   testudo-cli show <run-id>
   testudo-cli export <run-id> <page-id> <out.mp4> [--fps N]
   testudo-cli prune [--keep N] [--max-frames-mb N]
   testudo-cli update [--check] [--channel stable|bleeding-edge]
-                                           install a newer Testudo (--check only reports it);
-                                           the channel defaults to the one in Settings
+                                           install a newer Testudo. --check only reports it.
+                                           The channel defaults to the one in Settings.
 
 data dir: $TESTUDO_DATA_DIR, else $XDG_DATA_HOME/testudo, else ~/.local/share/testudo
 retention: TESTUDO_KEEP_RUNS (200), TESTUDO_MAX_FRAMES_MB (5120), TESTUDO_KEEP_FRAMES=all|failed";
@@ -69,7 +69,7 @@ fn main() -> Result<()> {
             }
             let r = Store::open(&data)?.prune(&retention)?;
             println!(
-                "deleted {} runs, {} recordings; frames now {:.1} MB",
+                "deleted {} runs and {} recordings; frames now take {:.1} MB",
                 r.runs_deleted,
                 r.recordings_deleted,
                 r.frame_bytes as f64 / 1048576.0
@@ -212,7 +212,7 @@ async fn run(args: &[String], data: &std::path::Path) -> Result<i32> {
                 eprintln!("started {label} ({})", run.id);
                 labels.insert(run.id.clone(), label);
             }
-            Err(e) => eprintln!("could not start {label}: {e:#}"),
+            Err(e) => eprintln!("couldn't start {label}: {e:#}"),
         }
     }
     let many = labels.len() > 1;
@@ -223,7 +223,7 @@ async fn run(args: &[String], data: &std::path::Path) -> Result<i32> {
     while results.len() < labels.len() {
         tokio::select! {
             Some(sig) = stop.recv() => {
-                eprintln!("{sig}: stopping runs (SIGINT, escalating after {}s)…", testudo_core::CANCEL_GRACE.as_secs());
+                eprintln!("{sig}: stopping runs with SIGINT, then forcing them after {}s…", testudo_core::CANCEL_GRACE.as_secs());
                 cancelled = true;
                 orch.cancel_all();
             }

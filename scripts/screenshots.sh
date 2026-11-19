@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
-# Retake the README screenshots (docs/screenshots/*.png) from examples/acme-shop.
+# Retakes the README screenshots in docs/screenshots from examples/acme-shop.
 #
 #   scripts/screenshots.sh [shot...]      # shots: focus compare history live unit-tests
 #
-# Linux with KDE Plasma 6 only: each shot runs Testudo in its own headless
-# KWin session (kwin_wayland --virtual) and captures the window with Spectacle,
-# so nothing appears on your desktop.
+# Needs Linux with KDE Plasma 6. Each shot runs Testudo in its own headless
+# KWin session, started with kwin_wayland --virtual, and captures the window
+# with Spectacle. Nothing appears on your desktop.
 #
-# Everything runs under a throwaway HOME holding a copy of the example at
-# ~/projects/acme-shop, so the shots show no real paths, history or git branch.
+# Everything runs under a throwaway HOME that holds a copy of the example at
+# ~/projects/acme-shop. The shots show no real paths, history or git branch.
 # The example needs its packages first:
 #   cd examples/acme-shop && npm install && npx playwright install chromium-headless-shell
 #
 # Environment:
-#   TESTUDO_BIN, TESTUDO_CLI   binaries to use (default: a fresh debug build)
-#   LIVE_WAIT, UNIT_WAIT       seconds before the live/unit-tests captures
-#                              (default 2.6 and 4; tune them on slower machines)
-#   OUT                        where the PNGs go (default docs/screenshots)
+#   TESTUDO_BIN, TESTUDO_CLI   binaries to use, a fresh debug build by default
+#   LIVE_WAIT, UNIT_WAIT       seconds to wait before the live and unit-tests
+#                              captures, 2.6 and 4 by default. Raise them on
+#                              slower machines.
+#   OUT                        where the PNGs go, docs/screenshots by default
 #   KEEP=1                     keep the throwaway HOME and logs afterwards
 set -euo pipefail
 
@@ -52,8 +53,8 @@ cp -a "$example" "$HOME/projects/"
 rm -rf "$HOME/projects/acme-shop/test-results"
 cd "$HOME/projects"
 
-# One shot: start Testudo inside a fresh virtual KWin session, wait, capture
-# the active window. Runs as the session's only client, so it exits with it.
+# Takes one shot inside a fresh virtual KWin session. It starts Testudo, waits,
+# then captures the active window. KWin exits when this script does.
 cat >"$work/shot.sh" <<'EOF'
 #!/usr/bin/env bash
 png=$1 wait=$2
@@ -90,8 +91,8 @@ for s in "${shots[@]}"; do
   case $s in focus | compare | history) needs_history=1 ;; esac
 done
 
-# The replay shots need some history. Record it before any live shot: a live
-# capture is killed mid-run and would be recorded as Interrupted.
+# The replay shots need some history. Record it before any live shot. A live
+# capture kills Testudo mid-run, and the run would be recorded as Interrupted.
 if [ $needs_history = 1 ]; then
   echo "screenshots: recording 5 runs of acme-shop"
   for _ in 1 2 3 4 5; do
