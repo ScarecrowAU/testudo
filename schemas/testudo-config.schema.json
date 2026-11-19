@@ -24,7 +24,7 @@
         },
         "env_file": {
           "default": null,
-          "description": "A `.env` file (KEY=value lines), relative to the folder holding\n`.testudo`. Must exist when the rule applies.",
+          "description": "A `.env` file of KEY=value lines, relative to the folder holding\n`.testudo`. It must exist when the rule applies.",
           "type": [
             "string",
             "null"
@@ -40,7 +40,7 @@
         },
         "replaceGlobalArgs": {
           "default": false,
-          "description": "On a local rule (with `path`): drop the global rules' `args` for\nmatching suites.",
+          "description": "On a local rule, one with `path`, drop the global rules' `args` for\nmatching suites.",
           "type": "boolean"
         },
         "runner": {
@@ -52,7 +52,7 @@
               "type": "null"
             }
           ],
-          "description": "The runner(s) this rule applies to. Default: all."
+          "description": "The runners this rule applies to. Without it, the rule applies to all\nrunners."
         }
       },
       "type": "object"
@@ -97,11 +97,11 @@
       "description": "An env value: strings as they are, numbers and booleans as written."
     }
   },
-  "description": "Testudo project config (`.testudo/config.json`, JSON5): rules that give\ntest runs extra environment variables and arguments.",
+  "description": "Testudo project config in `.testudo/config.json`, written in JSON5. Its\nrules give test runs extra environment variables and arguments.",
   "properties": {
     "$schema": {
       "default": null,
-      "description": "JSON Schema reference for editors; ignored by Testudo.",
+      "description": "JSON Schema reference for editors. Testudo ignores it.",
       "type": [
         "string",
         "null"

@@ -18,7 +18,7 @@ Release archives are signed with minisign. Testudo's updater checks the signatur
 minisign -V -P RWSmCfcnTJgsZrV6+H0NIc6Fi9I+ydhUDLazPG5hFYvAXpZtkmNcOTeJ -m testudo-<version>-<target>.tar.gz
 ```
 
-They also carry a build provenance attestation from this repository's CI:
+Release archives also carry a build provenance attestation from this repository's CI:
 
 ```sh
 gh attestation verify testudo-<version>-<target>.tar.gz --repo ScarecrowAU/testudo

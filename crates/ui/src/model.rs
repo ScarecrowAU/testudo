@@ -10,6 +10,8 @@ use testudo_protocol::{Event, NetworkPhase, StdStream, TestStatus};
 
 const MAX_LINES: usize = 5_000;
 const MAX_ROWS: usize = 2_000;
+/// Output lines kept per test (its terminal tile shows the tail).
+const MAX_TEST_LINES: usize = 500;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PageKey {
@@ -37,6 +39,9 @@ pub struct Run {
     /// RunStarted: enough to find the suite again to re-run a test.
     pub runner: String,
     pub cwd: String,
+    /// The runner args the user started it with (None in old recordings):
+    /// a re-run passes them again.
+    pub user_args: Option<Vec<String>>,
 }
 
 impl Run {
@@ -114,6 +119,10 @@ pub struct Test {
     /// Every reported step (Playwright actions, expects, test.step), in start
     /// order, stamped with hub receive time like everything else.
     pub steps: Vec<StepRow>,
+    /// When the current attempt began (None while queued).
+    pub started_at: Option<f64>,
+    /// Output the runner attributed to this test, one entry per line.
+    pub output: Vec<OutputLine>,
 }
 
 pub struct StepRow {
@@ -191,6 +200,7 @@ impl Model {
             output: Vec::new(),
             runner: String::new(),
             cwd: String::new(),
+            user_args: None,
         });
         self.runs.last_mut().unwrap()
     }
@@ -334,6 +344,11 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
         } => {
             // Queued tests start here; retries reuse the test id: reset in place.
             if let Some(t) = run.test_mut(&test_id) {
+                // A first start keeps output that came ahead of it: Vitest
+                // sends a test's console logs before its begin.
+                if !t.queued {
+                    t.output.clear();
+                }
                 t.queued = false;
                 t.status = None;
                 t.error = None;
@@ -341,6 +356,7 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
                 t.steps.clear();
                 t.current_step = None;
                 t.note = None;
+                t.started_at = Some(at);
             } else {
                 run.tests.push(Test {
                     id: test_id,
@@ -356,6 +372,8 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
                     current_step: None,
                     note: None,
                     steps: Vec::new(),
+                    started_at: Some(at),
+                    output: Vec::new(),
                 });
             }
         }
@@ -382,6 +400,8 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
                     current_step: None,
                     note: None,
                     steps: Vec::new(),
+                    started_at: None,
+                    output: Vec::new(),
                 });
             }
         }
@@ -443,6 +463,22 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
             }
         }
         Event::RunEnd { status } => run.run_end = Some(status),
+        Event::TestOutput { test_id, stream, text } => {
+            if let Some(t) = run.test_mut(&test_id) {
+                let source = match stream {
+                    StdStream::Stdout => Source::Stdout,
+                    StdStream::Stderr => Source::Stderr,
+                };
+                for line in text.lines() {
+                    let line = OutputLine {
+                        at,
+                        source,
+                        text: line.to_owned(),
+                    };
+                    push_capped(&mut t.output, line, MAX_TEST_LINES);
+                }
+            }
+        }
         Event::Stdio { stream, line } => {
             let source = match stream {
                 _ if line.starts_with("[testudo]") => Source::Testudo,
@@ -463,10 +499,17 @@ fn apply_run_event(run: &mut Run, at: f64, event: Event) {
                 MAX_LINES,
             )
         }
-        Event::RunStarted { label, runner, cwd, .. } => {
+        Event::RunStarted {
+            label,
+            runner,
+            cwd,
+            user_args,
+            ..
+        } => {
             run.label = label;
             run.runner = runner;
             run.cwd = cwd;
+            run.user_args = user_args;
         }
         Event::ProcessExited { code } => run.exit = Some(code),
         Event::Hello { .. } => {}

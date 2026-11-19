@@ -4,10 +4,13 @@
 
 use super::tables::{ConsoleItem, NetItem};
 use super::*;
-use crate::logic::{best_grid, compare_position, run_number, status_label, url_path};
+use crate::logic::{best_grid, compare_position, run_number, status_label, url_path, with_line};
 use crate::state::{ConsoleFilter, FocusTab, NetFilter};
 use std::sync::Arc;
 use testudo_protocol::TestStatus;
+
+/// Shown over the last live frame of a page that has no recording.
+const NO_RECORDING: &str = "No recording. Recording was off, or retention removed it. Showing the last live frame";
 
 /// An earlier run's recording beside the frame: (label, status, image).
 type ComparedCell = (String, Option<TestStatus>, Option<Arc<RenderImage>>);
@@ -99,6 +102,7 @@ impl TestudoApp {
             (_, None) => Some("Run not found"),
             _ => None,
         };
+        let rerun_pending = self.rerun_pending(w);
         let compare_target = test.and_then(|t| t.file.clone().map(|f| (f, t.title_path.clone())));
         let now = now_ms();
         // The compared earlier runs: (shown cells, first position, how many
@@ -122,7 +126,7 @@ impl TestudoApp {
                         .map(|d| format!(" · {}", fmt_dur(d)))
                         .unwrap_or_default();
                     let fallback = if l.by_time_fallback {
-                        " · steps differ, by time"
+                        " · steps differ, aligned by time"
                     } else {
                         ""
                     };
@@ -142,7 +146,7 @@ impl TestudoApp {
             .and_then(|t| t.file.as_ref().map(|f| (f, t.line)))
             .map(|(f, line)| {
                 let name = f.rsplit('/').next().unwrap_or(f);
-                format!("{name}:{}", line.unwrap_or(0))
+                with_line(name, line)
             });
 
         let steps: Rc<Vec<StepItem>> = Rc::new(
@@ -291,9 +295,14 @@ impl TestudoApp {
                             .icon(media_icon("rotate-ccw"))
                             .small()
                             .ghost()
-                            .disabled(rerun_blocker.is_some())
-                            .when(rerun_blocker.is_some(), |b| b.cursor_default())
-                            .tooltip(rerun_blocker.unwrap_or("Re-run this test and watch it live"))
+                            .loading(rerun_pending)
+                            .disabled(rerun_blocker.is_some() || rerun_pending)
+                            .when(rerun_blocker.is_some() || rerun_pending, |b| b.cursor_default())
+                            .tooltip(match (rerun_pending, rerun_blocker) {
+                                (true, _) => "Re-running. When the new run's page opens, it replaces this one",
+                                (false, Some(why)) => why,
+                                (false, None) => "Re-run this test here and watch it live",
+                            })
                             .on_click(cx.listener(move |this, _, _, cx| this.rerun_test(w, cx))),
                     )
                     .when(self.store.is_some() && compare_target.is_some(), |row| {
@@ -336,7 +345,7 @@ impl TestudoApp {
                                 .tooltip(if comparing {
                                     "Hide comparison"
                                 } else {
-                                    "Compare with previous runs: play this test's earlier recordings alongside, in step"
+                                    "Compare with earlier runs. Plays this test's earlier recordings beside this one, in step"
                                 })
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     let store = this.store.clone();
@@ -424,7 +433,7 @@ impl TestudoApp {
                         .left_2()
                         .text_xs()
                         .text_color(muted)
-                        .child("recording unavailable (disabled or removed by retention); showing last live frame"),
+                        .child(NO_RECORDING),
                 )
             })
             .on_scroll(cx.listener(move |this, e: &ScrollEvent, _, cx| {
@@ -610,7 +619,7 @@ impl TestudoApp {
                     div()
                         .text_xs()
                         .text_color(muted)
-                        .child("No earlier recordings of this test (retention may have removed them)"),
+                        .child("No earlier recordings of this test. Retention may have removed them."),
                 )
                 .child(frame)
                 .into_any_element(),

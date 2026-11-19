@@ -29,7 +29,25 @@ fn mono_uncached() -> SharedString {
     }
 }
 
-/// The family fontconfig picks for a generic alias (what the desktop uses).
+/// Fonts to fall back to for characters the UI and mono fonts lack: the
+/// status marks (✔ ✘ ⏳ ⊘ ⏹) aren't in Noto Sans or most monospace fonts, and
+/// gpui only falls back to fonts it is told about. macOS falls back itself.
+pub fn fallbacks() -> Option<gpui_kit::FontFallbacks> {
+    static FALLBACKS: std::sync::OnceLock<Option<gpui_kit::FontFallbacks>> = std::sync::OnceLock::new();
+    FALLBACKS
+        .get_or_init(|| {
+            if cfg!(target_os = "macos") {
+                return None;
+            }
+            // A font with every mark, as fontconfig would pick it.
+            let symbols = fontconfig(":charset=2714 2718 23f3 2298 23f9")?;
+            Some(gpui_kit::FontFallbacks::from_fonts(vec![symbols.to_string()]))
+        })
+        .clone()
+}
+
+/// The family fontconfig picks for a pattern: a generic alias (what the
+/// desktop uses) or a character set.
 fn fontconfig(alias: &str) -> Option<SharedString> {
     let out = std::process::Command::new("fc-match")
         .args(["-f", "%{family[0]}", alias])

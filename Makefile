@@ -40,7 +40,7 @@ LSREGISTER := /System/Library/Frameworks/CoreServices.framework/Frameworks/Launc
 BINS     := testudo testudo-cli
 ADAPTERS := $(wildcard adapters/js/*.mjs) adapters/js/package.json
 
-.PHONY: help build install uninstall test lint clean dev macos-app
+.PHONY: help build install uninstall test lint clean dev screenshots macos-app
 
 help: ## show targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -90,6 +90,9 @@ lint: ## clippy with warnings as errors
 
 clean: ## remove build output
 	$(CARGO) clean
+
+screenshots: ## retake the README screenshots from examples/acme-shop (Linux, KDE Plasma 6)
+	scripts/screenshots.sh
 
 dev: ## rebuild on change and restart the GUI when the build succeeds (ARGS="<project dir> ...")
 	$(CARGO) run -q -p testudo-dev -- $(ARGS)

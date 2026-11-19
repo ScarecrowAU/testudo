@@ -215,7 +215,7 @@ fn check_project_config(root: &Path, suites: &mut [Suite]) {
         if let Err(e) = checked {
             suite
                 .warnings
-                .push(format!("{e:#} (runs won't start until it's fixed)"));
+                .push(format!("{e:#}. Runs won't start until it's fixed."));
         }
     }
 }

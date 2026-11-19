@@ -4,9 +4,9 @@
 
 <p align="center"><em>Watch your tests, not your terminal.</em></p>
 
-Native GUI test runner that controls, monitors and reports on multiple concurrent test suites, with live views of the headless browsers they drive. Every run is recorded so you can scrub through it, compare it with earlier runs and spot flaky tests. Nothing is installed into or written to your project.
+Testudo is a native GUI test runner. It runs your test suites, shows live views of the headless browsers they drive, and reports their results. Every run is recorded so you can scrub through it, compare it with earlier runs and spot flaky tests. Nothing is installed into or written to your project.
 
-![Testudo running a Playwright suite: one test still running in a live browser page, finished pages beside it, the tests in the sidebar and runner output below](docs/screenshots/live.png)
+![Testudo running a Playwright suite: three tests running in live browser pages, finished pages beside them, the running tests in the sidebar, a Vitest suite queued behind it and runner output below](docs/screenshots/live.png)
 
 ## Compatibility
 
@@ -23,9 +23,9 @@ Native GUI test runner that controls, monitors and reports on multiple concurren
 
 <sub>¹ In browser mode (Playwright provider).</sub><br><sub>² Through its Vitest addon or a Playwright story suite.</sub><br><sub>³ Already found by Scan, not runnable yet.</sub><br><sub>— The runner drives no browser.</sub>
 
-Point Testudo at any directory, including a monorepo root, and it finds `playwright*.config.*`, Vitest configs and workspaces, and `vite.config.*` files with a `test` block. Each suite runs with the runner installed in its own project and the Node version from its `.nvmrc` / `.node-version` (nvm and fnm), so a monorepo can mix versions. Chromium is captured on every supported Playwright version; Firefox and WebKit where Playwright has `page.screencast`.
+Point Testudo at any directory, including a monorepo root, and it finds `playwright*.config.*`, Vitest configs and workspaces, and `vite.config.*` files with a `test` block. Each suite runs with the runner installed in its own project and the Node version from its `.nvmrc` or `.node-version` through nvm or fnm, so a monorepo can mix versions. Testudo captures Chromium on every supported Playwright version, and Firefox and WebKit on Playwright versions that have `page.screencast`.
 
-In a git repository with linked worktrees, the directory box shows the main worktree and a selector beside it picks which worktree to scan and run; opening Testudo inside a linked worktree preselects it. Scans skip any folder below the root that has its own `.git` (linked worktrees such as `.claude/worktrees/*`, nested clones, submodules), so one worktree never lists another's suites.
+In a git repository with linked worktrees, the directory box shows the main worktree and a selector beside it picks which worktree to scan and run; opening Testudo inside a linked worktree preselects it. Scans skip any folder below the root that has its own `.git`, such as linked worktrees in `.claude/worktrees/*`, nested clones and submodules. One worktree never lists another's suites.
 
 Runs on Linux and macOS.
 
@@ -39,13 +39,17 @@ Runs on Linux and macOS.
 
 ![Comparison: this run and three earlier runs of the same test in a grid, aligned by step](docs/screenshots/compare.png)
 
+**Unit tests without a browser** get a tile per test file, with each test's result and what it printed; click one to read its whole log:
+
+![A Vitest run: one tile per test file listing its tests, their times and their console output](docs/screenshots/unit-tests.png)
+
 **History** of every run, with pass rate, flaky tests and a timeline you can replay:
 
 ![History: run list with summary, run timeline and recorded pages](docs/screenshots/history.png)
 
 ## Install
 
-Tagged releases publish prebuilt Linux and macOS archives on the [Releases](https://github.com/ScarecrowAU/testudo/releases) page. To build from source (needs a Rust toolchain):
+Tagged releases publish prebuilt Linux and macOS archives on the [Releases](https://github.com/ScarecrowAU/testudo/releases) page. To build from source, you need a Rust toolchain:
 
 ```sh
 make install                     # into ~/.local, with a desktop entry
@@ -53,9 +57,9 @@ make install PREFIX=/usr/local   # system-wide (run with sudo)
 make uninstall                   # run history is kept
 ```
 
-On Linux this adds a desktop entry and icons. On macOS it adds `Testudo.app` to `~/Applications` (`MACAPPDIR=/Applications` for all users), so Spotlight, Launchpad and the Dock show Testudo with its icon; the app runs the installed `bin/testudo`, so updates apply to it. Started from a terminal, Testudo shows its icon in the Dock too.
+On Linux this adds a desktop entry and icons. On macOS it adds `Testudo.app` to `~/Applications`, so Spotlight, Launchpad and the Dock show Testudo with its icon. Set `MACAPPDIR=/Applications` to install it for all users. The app runs the installed `bin/testudo`, so updates apply to it. Started from a terminal, Testudo shows its icon in the Dock too.
 
-ffmpeg is optional, for MP4 export.
+MP4 export needs ffmpeg. Nothing else does.
 
 ### Updates
 
@@ -71,7 +75,7 @@ testudo-cli update --check   # report whether there's a newer version
 testudo-cli update           # install it
 ```
 
-Installs Testudo can't write to (such as `/usr/local` without sudo) and development builds only report updates.
+Development builds, and installs that Testudo can't write to such as `/usr/local` without sudo, only report updates.
 
 ## Usage
 
@@ -88,23 +92,29 @@ testudo-cli export <run-id> <page-id> out.mp4
 
 Filters match `all`, a runner name, or part of a suite name or config path. Arguments after `--` go to every started runner.
 
-In the focus view: wheel scrubs, Shift+wheel or ←/→ steps one frame, Space plays or pauses, Esc returns to the grid. Stopping a run (button, closing the window, Ctrl+C) lets the runner tear down cleanly before anything is killed.
+Suites run one at a time. **Run all** queues them, and so does ▶ while a run is going. The next suite starts when the running one finishes. A queued suite's **Start** button runs it straight away, alongside the running one.
+
+In the live view, the sidebar lists each run with its counts and the tests running right now; click a run to show its results in the grid. Tests that open no browser page get a tile with their output and error instead. API tests and setup projects get a tile per test, and plain Vitest gets a tile per test file. Click such a tile to read its whole log. **Hide completed** leaves completed tests out of the grid, except failures. Untick it to bring them back.
+
+A finished run's ↻ button runs its suite again. The focus view's ↻ button re-runs that one test in place. When the new run's page opens, it replaces the current one in the same tab and keeps any comparison. Both buttons reuse the runner arguments the run was started with.
+
+In the focus view, the mouse wheel scrubs, Shift+wheel or the ← and → keys step one frame, Space plays or pauses, and Esc returns to the grid. When you stop a run with its Stop button, by closing the window or with Ctrl+C, the runner gets time to shut down cleanly before Testudo kills anything.
 
 ## Configuration
 
-Recording resolution and frame rate, where recordings are kept, deleting old recordings and updates are in Settings (⚙, top right), saved to `~/.config/testudo/settings.json` and shared with `testudo-cli`.
+Settings, the ⚙ button at the top right, hold the recording resolution and frame rate, where recordings are kept, deleting old recordings, and updates. Testudo saves them to `~/.config/testudo/settings.json`, and `testudo-cli` uses them too.
 
 | Environment variable | Default | Effect |
 |---|---|---|
 | `TESTUDO_DATA_DIR` | `~/.local/share/testudo` | Where history and recordings live. |
 | `TESTUDO_CONFIG_DIR` | `~/.config/testudo` | Where settings live. |
 | `TESTUDO_KEEP_RUNS` | 200 | Delete whole runs beyond the newest N. |
-| `TESTUDO_MAX_FRAMES_MB` | 5120 | Oldest runs lose their frames first; results stay. |
+| `TESTUDO_MAX_FRAMES_MB` | 5120 | Cap on recorded frames. The oldest runs lose their frames first and keep their results. |
 | `TESTUDO_KEEP_FRAMES` | `all` | `failed` keeps frames only for failing tests. |
 
 ### Project config
 
-A project can give its runs extra environment variables and arguments in `.testudo/config.json` (JSON5: comments, unquoted keys, single quotes and trailing commas are fine). Testudo uses the nearest one at or above the scanned directory, up to the repository root, and paths in it are relative to the folder holding `.testudo`.
+A project can give its runs extra environment variables and arguments in `.testudo/config.json`. The file is JSON5, so comments, unquoted keys, single quotes and trailing commas are fine. Testudo uses the nearest one at or above the scanned directory, up to the repository root, and paths in it are relative to the folder holding `.testudo`.
 
 ```json5
 {
@@ -125,9 +135,9 @@ A project can give its runs extra environment variables and arguments in `.testu
 }
 ```
 
-`path` matches the suite's directory: `*` stays within one folder, `**` crosses folders. Matching rules merge, globals first and then locals, each in file order, so local rules win conflicts. `env` merges by name (in a rule, `env` beats `env_file`). `args` are appended: global, then local, then the runner args typed in the GUI or given after `--`. Testudo's own variables take precedence, and `NODE_OPTIONS` and `PATH` are combined with Testudo's. The run output lists the variable names it set (not their values). Each run reads the config (and its `env_file`s) when it starts, so edits apply to the next run without a rescan. A config that doesn't parse, or a missing `env_file`, shows as a warning on the affected suites when scanned, and a run won't start until it's fixed.
+`path` matches the suite's directory: `*` stays within one folder, `**` crosses folders. Matching rules merge, globals first and then locals, each in file order, so local rules win conflicts. `env` merges by name, and within a rule `env` overrides `env_file`. `args` are appended: global, then local, then the runner args typed in the GUI or given after `--`. Testudo's own variables take precedence, and `NODE_OPTIONS` and `PATH` are combined with Testudo's. The run output lists the names of the variables Testudo set, but not their values. Each run reads the config and its `env_file`s when it starts, so edits apply to the next run without a rescan. A config that doesn't parse, or a missing `env_file`, shows as a warning on the affected suites when scanned, and a run won't start until it's fixed.
 
-The `$schema` line gives editors completion, hover docs and validation from [`schemas/testudo-config.schema.json`](schemas/testudo-config.schema.json). Editors read `.json` files as JSON (with comments), so quote keys and use double quotes to keep the editor happy; Testudo itself accepts full JSON5 either way.
+The `$schema` line gives editors completion, hover docs and validation from [`schemas/testudo-config.schema.json`](schemas/testudo-config.schema.json). Editors read `.json` files as JSON with comments, so quote keys and use double quotes to avoid editor errors. Testudo accepts full JSON5 either way.
 
 ## How it works
 
@@ -155,7 +165,7 @@ flowchart LR
   preload -- "frames + events" --> ingest
 ```
 
-The adapters in `adapters/js` are injected through the runner's command line and environment only (`PW_TEST_REPORTER`, `--reporter`, `NODE_OPTIONS=--import`). Frames are stored as the browser's own JPEGs, with repeated frames deduplicated.
+The adapters in `adapters/js` are injected only through the runner's command line and environment: `PW_TEST_REPORTER`, `--reporter` and `NODE_OPTIONS=--import`. Frames are stored as the browser's own JPEGs, with repeated frames deduplicated.
 
 | Path | What |
 |---|---|
@@ -166,7 +176,7 @@ The adapters in `adapters/js` are injected through the runner's command line and
 | `crates/cli` | `testudo-cli`. |
 | `crates/update` | Update checks and in-place installs from releases or `main`. |
 | `adapters/js` | Zero-dependency Node adapters. |
-| `examples/` | Playwright and Vitest-browser demo projects. |
+| `examples/` | Demo projects. `acme-shop` has a Playwright and a Vitest suite and is used for the screenshots. `playwright-demo` and `vitest-browser-demo` cover Playwright and Vitest browser mode. |
 
 ## Developing
 
@@ -177,7 +187,7 @@ make test
 make lint
 ```
 
-`make dev` restarts only after a successful build and logs to `target/dev/testudo.log`. Set `TESTUDO_OTLP_ENDPOINT=http://<collector>:4318` (in `dev/.env` for `make dev`) to export Testudo's own traces over OTLP/HTTP.
+`make dev` restarts only after a successful build and logs to `target/dev/testudo.log`. Set `TESTUDO_OTLP_ENDPOINT=http://<collector>:4318` to export Testudo's own traces over OTLP/HTTP. For `make dev`, set it in `dev/.env`.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, conventions and how pull requests are reviewed.
 

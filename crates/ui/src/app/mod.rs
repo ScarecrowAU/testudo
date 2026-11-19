@@ -36,12 +36,13 @@ use testudo_store::{RunRow, Store};
 
 use crate::bridge::UiMsg;
 use crate::logic::{
-    PaneGrid, REPEAT_THRESHOLD, RowState, Tone, expand_tilde, fmt_ago, fmt_dur, fmt_secs, fmt_time, looks_like_failure,
-    ordered_pages, pane_grid, pane_name, rerun_args, row_state, skip_startup_scan, status_icon, status_label,
-    summary_line, test_order, tilde, truncate, url_path,
+    PaneGrid, REPEAT_THRESHOLD, RowState, SuiteQueue, TermKind, Tile, Tone, expand_tilde, fmt_ago, fmt_dur, fmt_secs,
+    fmt_time, grid_tiles, looks_like_failure, pane_grid, pane_name, rerun_args, row_state, skip_startup_scan,
+    status_icon, status_label, summary_line, terminal_lines, test_order, tilde, truncate, url_path, with_line,
 };
+use crate::logic::{file_lines, file_status, log_lines, log_tests};
 use crate::model::{Model, Page, PageKey, Source};
-use crate::state::{InspectorTab, PageFocus, PagesView, Replay, Retired, StreamFilter};
+use crate::state::{InspectorTab, LogFocus, PageFocus, PagesView, Replay, Retired, StreamFilter};
 
 mod focus;
 mod settings;
@@ -108,8 +109,12 @@ pub struct TestudoApp {
 
     live: PagesView,
     handles: HashMap<RunId, RunHandle>,
-    /// A run started by "Re-run test": its first page opens in the focus view.
-    follow_run: Option<RunId>,
+    /// Suites waiting for the running one to finish ("Run all", or ▶ while
+    /// a run is going). Start on a queued suite runs it now regardless.
+    queue: SuiteQueue,
+    /// A run started by "Re-run test", and the view whose focus asked for it:
+    /// its first page replaces the focused one there.
+    follow_run: Option<(RunId, Which)>,
     /// Runs from a project we switched away from: still shutting down, their
     /// late events and frames are ignored (the recorder still keeps them).
     dropped_runs: std::collections::HashSet<RunId>,
@@ -138,6 +143,10 @@ pub struct TestudoApp {
     /// Scroll position of the run list (live sidebar / History tests).
     /// One per view (live, replay), so each run list keeps its own position.
     run_scroll: [UniformListScrollHandle; 2],
+    /// Scroll position of each page grid (live, replay).
+    pages_scroll: [UniformListScrollHandle; 2],
+    /// A redraw of the grid is scheduled (see `recheck_grid`).
+    grid_recheck: bool,
     #[cfg(debug_assertions)]
     started_at: Instant,
     focus_handle: FocusHandle,
@@ -225,6 +234,7 @@ impl TestudoApp {
             mode: Mode::Live,
             live: PagesView::new(),
             handles: HashMap::new(),
+            queue: SuiteQueue::default(),
             dropped_runs: Default::default(),
             follow_run: None,
             history: Vec::new(),
@@ -244,6 +254,8 @@ impl TestudoApp {
             last_render: Instant::now(),
             perf: Default::default(),
             run_scroll: [UniformListScrollHandle::new(), UniformListScrollHandle::new()],
+            pages_scroll: [UniformListScrollHandle::new(), UniformListScrollHandle::new()],
+            grid_recheck: false,
             #[cfg(debug_assertions)]
             started_at: Instant::now(),
             focus_handle: cx.focus_handle(),
@@ -401,6 +413,14 @@ impl TestudoApp {
             UiMsg::Event { run_id, at, event } => {
                 if let Event::ProcessExited { .. } = &event {
                     self.handles.remove(&run_id);
+                    self.start_next(cx);
+                    if self.follow_run.as_ref().is_some_and(|(id, _)| *id == run_id) {
+                        self.follow_run = None;
+                        self.error = Some(
+                            "The re-run finished without opening a browser page; its results are in the run list."
+                                .into(),
+                        );
+                    }
                     // Give the recorder a moment to commit the final status.
                     cx.spawn(async move |this, cx| {
                         cx.background_executor().timer(Duration::from_millis(500)).await;
@@ -416,22 +436,26 @@ impl TestudoApp {
                     Event::PageOpened { page_id, .. } => Some(page_id.clone()),
                     _ => None,
                 };
-                if matches!(event, Event::RunStarted { .. }) {
-                    self.live.drop_finished_run_pages(&mut self.retired);
-                }
-                let follow = match &event {
-                    Event::PageOpened { page_id, .. } if self.follow_run.as_deref() == Some(run_id.as_str()) => {
-                        Some(page_id.clone())
+                let finished = matches!(event, Event::RunStarted { .. } | Event::ProcessExited { .. });
+                let follow = match (&event, &self.follow_run) {
+                    (Event::PageOpened { page_id, .. }, Some((id, from))) if *id == run_id => {
+                        Some((page_id.clone(), *from))
                     }
                     _ => None,
                 };
                 self.live.apply(&run_id, at, event);
-                if let Some(page_id) = follow {
+                if finished {
+                    self.live.release_hidden_frames(&mut self.retired);
+                }
+                if let Some((page_id, from)) = follow {
                     self.follow_run = None;
-                    self.open_live_focus(PageKey {
-                        run_id: run_id.clone(),
-                        page_id,
-                    });
+                    self.focus_rerun(
+                        from,
+                        PageKey {
+                            run_id: run_id.clone(),
+                            page_id,
+                        },
+                    );
                 }
                 // Test hook (debug builds only): focus the first page that opens.
                 #[cfg(debug_assertions)]
@@ -453,7 +477,7 @@ impl TestudoApp {
         if let Some(store) = &self.store {
             match store.list_runs(HISTORY_LIMIT) {
                 Ok(rows) => self.history = rows,
-                Err(e) => self.error = Some(format!("reading history: {e:#}")),
+                Err(e) => self.error = Some(format!("Couldn't read history: {e:#}")),
             }
             self.flaky = store.flaky_tests(SUMMARY_RUNS).unwrap_or_default();
         }
@@ -548,6 +572,7 @@ impl TestudoApp {
     /// focus). Settings are kept; History still has everything.
     #[tracing::instrument(level = "info", skip_all, fields(stopped = self.handles.len()))]
     fn leave_project(&mut self) {
+        self.queue.clear();
         for (id, handle) in self.handles.drain() {
             handle.cancel();
             self.dropped_runs.insert(id);
@@ -570,30 +595,120 @@ impl TestudoApp {
             self.error = Some(format!("--run {filter}: no runnable suite matches"));
         }
         for s in &chosen {
-            self.start_suite(s, cx);
+            self.queue.push(&s.id);
+        }
+        self.start_next(cx);
+    }
+
+    /// Run `suite` now if nothing is running, else put it in the queue.
+    fn queue_suite(&mut self, suite: &Suite, cx: &mut Context<Self>) {
+        self.queue.push(&suite.id);
+        self.start_next(cx);
+        cx.notify();
+    }
+
+    /// Start a queued suite now, alongside whatever is running.
+    fn start_queued(&mut self, suite: &Suite, cx: &mut Context<Self>) {
+        self.queue.remove(&suite.id);
+        self.start_suite(suite, cx);
+    }
+
+    /// When nothing is running, start the next queued suite. Suites that
+    /// fail to start or are gone after a rescan are skipped.
+    fn start_next(&mut self, cx: &mut Context<Self>) {
+        while self.handles.is_empty()
+            && let Some(id) = self.queue.pop_front()
+        {
+            let Some(suite) = self.suites.iter().find(|s| s.id == id && s.runnable()).cloned() else {
+                continue;
+            };
+            self.start_suite(&suite, cx);
         }
     }
 
     #[tracing::instrument(level = "info", skip_all, fields(suite = %suite.name))]
     fn start_suite(&mut self, suite: &Suite, cx: &mut Context<Self>) {
-        let args = self
-            .args_input
+        let args = self.user_args(cx);
+        self.launch(suite, args, cx);
+    }
+
+    /// The runner args typed in the top bar.
+    fn user_args(&self, cx: &App) -> Vec<String> {
+        self.args_input
             .read(cx)
             .value()
             .split_whitespace()
             .map(str::to_owned)
-            .collect();
+            .collect()
+    }
+
+    /// Start `suite` now with `args` and show it. Returns the run's id.
+    fn launch(&mut self, suite: &Suite, args: Vec<String>, cx: &mut Context<Self>) -> Option<RunId> {
         let started = RunSpec::for_suite(suite, args).and_then(|spec| self.orchestrator.start(spec));
+        cx.notify();
         match started {
             Ok(handle) => {
-                self.live.selected_run = Some(handle.id.clone());
-                self.handles.insert(handle.id.clone(), handle);
+                let id = handle.id.clone();
+                self.live.select_run(&id, self.store.as_deref(), &mut self.retired);
+                self.handles.insert(id.clone(), handle);
                 self.mode = Mode::Live;
                 self.error = None;
+                Some(id)
             }
-            Err(e) => self.error = Some(format!("{}: {e:#}", suite.name)),
+            Err(e) => {
+                self.error = Some(format!("{}: {e:#}", suite.name));
+                None
+            }
         }
-        cx.notify();
+    }
+
+    /// Run a finished run again: same suite, same runner args.
+    fn rerun_run(&mut self, w: Which, run_id: &str, cx: &mut Context<Self>) {
+        let Some(run) = self.view(w).and_then(|v| v.model.run(run_id)) else {
+            return;
+        };
+        let target = self.run_suite(run).map(|s| (s, self.run_args(run, cx)));
+        match target {
+            Ok((suite, args)) => {
+                self.launch(&suite, args, cx);
+            }
+            Err(e) => {
+                self.error = Some(format!("Can't re-run this suite: {e}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// The runner args `run` was started with; the args box for runs
+    /// recorded before those were kept.
+    fn run_args(&self, run: &crate::model::Run, cx: &App) -> Vec<String> {
+        run.user_args.clone().unwrap_or_else(|| self.user_args(cx))
+    }
+
+    /// The suite `run` ran: among the scanned suites, else found again in
+    /// the run's own directory (a History run from another project). A
+    /// directory can hold several suites of one runner (two Playwright
+    /// configs): the run's label names the right one.
+    fn run_suite(&self, run: &crate::model::Run) -> Result<Suite, String> {
+        let same_dir = |a: &std::path::Path| {
+            a.canonicalize()
+                .ok()
+                .zip(std::path::Path::new(&run.cwd).canonicalize().ok())
+                .is_some_and(|(a, b)| a == b)
+        };
+        let matches = |s: &Suite| s.kind.runner().is_some_and(|k| k.name() == run.runner) && same_dir(&s.dir);
+        let labelled = |s: &Suite| matches(s) && s.name == run.label;
+        if let Some(s) = self.suites.iter().find(|s| labelled(s)) {
+            return Ok(s.clone());
+        }
+        let found = discover(std::path::Path::new(&run.cwd));
+        found
+            .iter()
+            .find(|s| labelled(s))
+            .or_else(|| found.iter().find(|s| matches(s)))
+            .or_else(|| self.suites.iter().find(|s| matches(s)))
+            .cloned()
+            .ok_or_else(|| format!("no {} suite found in {}", run.runner, run.cwd))
     }
 
     /// The suite and arguments to run just the focused page's test again, or
@@ -611,37 +726,18 @@ impl TestudoApp {
         };
         let mut args = rerun_args(&run.runner, &run.cwd, file, line, test.project.as_deref())
             .ok_or_else(|| format!("re-running single tests isn't supported for {}", run.runner))?;
-        let same_dir = |a: &std::path::Path| {
-            a.canonicalize()
-                .ok()
-                .zip(std::path::Path::new(&run.cwd).canonicalize().ok())
-                .is_some_and(|(a, b)| a == b)
-        };
-        let matches = |s: &Suite| s.kind.runner().is_some_and(|k| k.name() == run.runner) && same_dir(&s.dir);
-        let suite = self
-            .suites
-            .iter()
-            .find(|s| matches(s))
-            .cloned()
-            .or_else(|| {
-                discover(std::path::Path::new(&run.cwd))
-                    .into_iter()
-                    .find(|s| matches(s))
-            })
-            .ok_or_else(|| format!("no {} suite found in {}", run.runner, run.cwd))?;
-        let mut user: Vec<String> = self
-            .args_input
-            .read(cx)
-            .value()
-            .split_whitespace()
-            .map(str::to_owned)
-            .collect();
-        user.append(&mut args);
-        Ok((suite, user))
+        let suite = self.run_suite(run)?;
+        // The args the run had, narrowed to this test (a run that was itself
+        // a re-run of it already has the filter).
+        let mut all = self.run_args(run, cx);
+        args.retain(|a| !all.contains(a));
+        all.append(&mut args);
+        Ok((suite, all))
     }
 
-    /// Run the focused page's test again and watch it: switches to Live and
-    /// opens the new run's page in the focus view when it appears.
+    /// Run the focused page's test again and watch it in the same focus view:
+    /// the focused page stays until the new run's page opens, which then takes
+    /// its place (from History, the focus moves over to Live).
     #[tracing::instrument(level = "info", skip_all, fields(view = ?w))]
     fn rerun_test(&mut self, w: Which, cx: &mut Context<Self>) {
         let (suite, args) = match self.rerun_target(w, cx) {
@@ -652,27 +748,18 @@ impl TestudoApp {
                 return;
             }
         };
-        let started = RunSpec::for_suite(&suite, args).and_then(|spec| self.orchestrator.start(spec));
-        match started {
-            Ok(handle) => {
-                self.follow_run = Some(handle.id.clone());
-                self.live.selected_run = Some(handle.id.clone());
-                self.handles.insert(handle.id.clone(), handle);
-                if self.live.focus.is_some() {
-                    self.close_focus(Which::Live);
-                }
-                self.mode = Mode::Live;
-                self.error = None;
-            }
-            Err(e) => self.error = Some(format!("{}: {e:#}", suite.name)),
+        let mode = self.mode;
+        if let Some(id) = self.launch(&suite, args, cx) {
+            self.follow_run = Some((id, w));
+            // The focus stays where it is until the new page opens.
+            self.mode = mode;
         }
-        cx.notify();
     }
 
     #[tracing::instrument(level = "info", skip(self))]
     fn open_replay(&mut self, run_id: &str) {
         let Some(store) = &self.store else {
-            self.error = Some("history unavailable: store failed to open".into());
+            self.error = Some("History is unavailable because its store failed to open.".into());
             return;
         };
         match Replay::load(store, run_id) {
@@ -725,6 +812,47 @@ impl TestudoApp {
             Which::Live => Some(&mut self.live),
             Which::Replay => self.replay.as_mut().map(|r| &mut r.view),
         }
+    }
+
+    /// The re-run asked for from view `from`'s focus opened its page: show it
+    /// in that focus, set up as the old one was (tab, speed, filters, the
+    /// comparison). Nothing happens if that focus was closed meanwhile.
+    fn focus_rerun(&mut self, from: Which, key: PageKey) {
+        let watching = match from {
+            Which::Live => self.live.focus.is_some(),
+            Which::Replay => self.mode == Mode::History && self.replay.as_ref().is_some_and(|r| r.view.focus.is_some()),
+        };
+        if !watching {
+            return;
+        }
+        let Some(page) = self.live.model.pages.get(&key) else {
+            return;
+        };
+        let mut f = PageFocus::live(page);
+        let compare = self.view(from).and_then(|v| v.focus.as_ref()).map(|old| {
+            f.carry_settings(old);
+            old.compare.as_ref().map(|c| c.count)
+        });
+        let test = self
+            .live
+            .model
+            .test_for_page(page)
+            .and_then(|t| Some((t.file.clone()?, t.title_path.clone())));
+        if let (Some(Some(count)), Some((file, title_path)), Some(store)) = (compare, test, self.store.clone()) {
+            f.open_compare(&file, &title_path, &store);
+            for _ in 1..count {
+                let old = f.resize_compare(1, &store);
+                self.retired.extend(old);
+            }
+        }
+        self.close_focus(Which::Live);
+        self.live.open_focus(f);
+        self.mode = Mode::Live;
+    }
+
+    /// A re-run asked for from this view's focus hasn't opened its page yet.
+    fn rerun_pending(&self, w: Which) -> bool {
+        self.follow_run.as_ref().is_some_and(|(_, from)| *from == w)
     }
 
     fn open_live_focus(&mut self, key: PageKey) {
@@ -877,7 +1005,7 @@ impl TestudoApp {
 
     // --- per-frame updates -----------------------------------------------------
 
-    /// Advance playback, follow mode, exports and reaping. Returns true if
+    /// Advance playback, follow mode and exports. Returns true if
     /// another frame should be scheduled.
     fn tick(&mut self, dt_ms: f64) -> bool {
         let mut animate = false;
@@ -887,7 +1015,6 @@ impl TestudoApp {
             animate |= replay.tick(dt_ms, &store, &mut self.retired);
             animate |= replay.exporter.poll();
         }
-        animate |= self.live.reap(now_ms(), &mut self.retired);
         let mut playing: Option<&'static str> = None;
         for w in [Which::Live, Which::Replay] {
             let running_live = w == Which::Live;
@@ -958,6 +1085,17 @@ impl TestudoApp {
     fn on_close_focus(&mut self, _: &CloseFocus, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(w) = self.focused_view() {
             self.close_focus(w);
+            cx.notify();
+            return;
+        }
+        let w = if self.mode == Mode::History {
+            Which::Replay
+        } else {
+            Which::Live
+        };
+        if let Some(v) = self.view_mut(w)
+            && v.log_focus.take().is_some()
+        {
             cx.notify();
         }
     }
@@ -1150,6 +1288,10 @@ pub(super) const SCROLLBAR_GUTTER: f32 = 16.;
 
 /// Height of a page tile's title/URL bar; the frame fits above it.
 const TILE_LABEL_H: f32 = 46.;
+/// Terminal tiles: space above the first line (for the status pills), and
+/// the height of each line.
+const TERM_TOP: f32 = 30.;
+const TERM_LINE_H: f32 = 16.;
 
 /// A recorded page frame, fitted and centred inside its container (which
 /// must be `relative`) whatever its shape. gpui's `img` takes the picture's
@@ -1213,8 +1355,9 @@ impl Render for TestudoApp {
         if self.perf.frame_end(frame_start, ctx) {
             window.request_animation_frame();
         }
-        v_flex()
-            .id("testudo")
+        let mut root = v_flex();
+        root.text_style().font_fallbacks = crate::fonts::fallbacks();
+        root.id("testudo")
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
@@ -1304,12 +1447,13 @@ impl TestudoApp {
             .child(div().w(px(220.)).child(Input::new(&self.args_input).small()))
             .when(mode == Mode::Live, |row| {
                 row.child(
-                    Checkbox::new("keep-closed")
+                    Checkbox::new("hide-completed")
                         .cursor_pointer()
-                        .label("Keep closed pages")
-                        .checked(self.live.keep_closed_pages)
+                        .label("Hide completed")
+                        .tooltip("Leave completed tests out of the grid, except failures")
+                        .checked(self.live.hide_completed)
                         .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                            this.live.keep_closed_pages = *checked;
+                            this.live.hide_completed = *checked;
                             cx.notify();
                         })),
                 )
@@ -1422,7 +1566,7 @@ impl TestudoApp {
                 div()
                     .text_sm()
                     .text_color(muted)
-                    .child("Choose a project folder, or press Scan to search this one."),
+                    .child("Choose a project directory, or press Scan to search this one."),
             );
         } else if self.scanned.is_some() && self.suites.is_empty() {
             col = col.child(
@@ -1432,8 +1576,10 @@ impl TestudoApp {
                     .child("No Playwright or Vitest suites found here."),
             );
         }
+        let busy = !self.handles.is_empty();
         for (i, s) in self.suites.iter().enumerate() {
             let suite = s.clone();
+            let queued = self.queue.position(&s.id);
             let mut hover = vec![s.id.clone()];
             hover.extend(s.problems.iter().map(|p| format!("✘ {p}")));
             hover.extend(s.warnings.iter().map(|w| format!("⚠ {w}")));
@@ -1445,9 +1591,19 @@ impl TestudoApp {
                         button(("run-suite", i))
                             .icon(media_icon("play"))
                             .xsmall()
-                            .disabled(!s.runnable())
-                            .when(!s.runnable(), |b| b.cursor_default())
-                            .on_click(cx.listener(move |this, _, _, cx| this.start_suite(&suite, cx))),
+                            .disabled(!s.runnable() || queued.is_some())
+                            .when(!s.runnable() || queued.is_some(), |b| b.cursor_default())
+                            .when(s.runnable() && queued.is_none(), |b| {
+                                b.tooltip(if busy {
+                                    "Queue this suite. It runs when the current run finishes"
+                                } else {
+                                    "Run"
+                                })
+                            })
+                            .on_click(cx.listener({
+                                let suite = suite.clone();
+                                move |this, _, _, cx| this.queue_suite(&suite, cx)
+                            })),
                     )
                     .child(
                         div()
@@ -1458,31 +1614,79 @@ impl TestudoApp {
                             .when(!s.runnable(), |d| d.text_color(muted))
                             .child(s.name.clone()),
                     )
+                    // Queued: its place and buttons need the room more.
                     .children(
                         s.tool
                             .as_ref()
                             .and_then(|t| t.version.clone())
+                            .filter(|_| queued.is_none())
                             .map(|v| div().text_xs().text_color(muted).child(v)),
                     )
                     .when(!s.warnings.is_empty(), |d| {
                         d.child(media_icon("triangle-alert").small().text_color(cx.theme().yellow))
                     })
+                    .when_some(queued, |d, n| {
+                        let id = s.id.clone();
+                        d.child(div().text_xs().text_color(muted).child(format!("Queued #{}", n + 1)))
+                            .child(
+                                button(("start-suite", i))
+                                    .label("Start")
+                                    .xsmall()
+                                    .tooltip("Start now, alongside the running suite")
+                                    .on_click(cx.listener(move |this, _, _, cx| this.start_queued(&suite, cx))),
+                            )
+                            .child(
+                                button(("unqueue-suite", i))
+                                    .icon(IconName::Close)
+                                    .xsmall()
+                                    .ghost()
+                                    .tooltip("Remove from the queue")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.queue.remove(&id);
+                                        cx.notify();
+                                    })),
+                            )
+                    })
                     .tooltip(tooltip_text(hover.join("\n"))),
             );
         }
-        if runnable > 1 {
-            col = col.child(
-                button("run-all")
-                    .icon(media_icon("play"))
-                    .label(format!("Run all {runnable}"))
-                    .small()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let all: Vec<Suite> = this.suites.iter().filter(|s| s.runnable()).cloned().collect();
-                        for s in &all {
-                            this.start_suite(s, cx);
-                        }
-                    })),
-            );
+        if runnable > 1 || !self.queue.is_empty() {
+            let mut row = h_flex().gap_2();
+            if runnable > 1 {
+                row = row.child(
+                    button("run-all")
+                        .icon(media_icon("play"))
+                        .label(format!("Run all {runnable}"))
+                        .small()
+                        .tooltip("Queue every suite; they run one at a time")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            let ids: Vec<String> = this
+                                .suites
+                                .iter()
+                                .filter(|s| s.runnable())
+                                .map(|s| s.id.clone())
+                                .collect();
+                            for id in &ids {
+                                this.queue.push(id);
+                            }
+                            this.start_next(cx);
+                            cx.notify();
+                        })),
+                );
+            }
+            if !self.queue.is_empty() {
+                row = row.child(
+                    button("clear-queue")
+                        .label(format!("Clear queue ({})", self.queue.len()))
+                        .small()
+                        .ghost()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.queue.clear();
+                            cx.notify();
+                        })),
+                );
+            }
+            col = col.child(row);
         }
         col
     }
@@ -1494,7 +1698,8 @@ impl TestudoApp {
         let Some(view) = self.view(w) else {
             return div().into_any_element();
         };
-        let rows = Rc::new(run_rows(view));
+        // Live lists only the tests running now; the grid has the rest.
+        let rows = Rc::new(run_rows(view, w == Which::Live));
         let list = uniform_list(
             ("runs", w as usize),
             rows.len(),
@@ -1611,6 +1816,24 @@ impl TestudoApp {
     /// A run-list row, with the selected run (its output is in the Output tab)
     /// marked by an accent bar down every one of its rows: header, counts,
     /// tests and notes. Other runs keep a transparent bar so rows align.
+    /// Show a run's results in the grid (Live) and its output in the Output tab.
+    fn select_run(&mut self, w: Which, run_id: &str, cx: &mut Context<Self>) {
+        let store = self.store.clone();
+        let Self {
+            live, replay, retired, ..
+        } = self;
+        let view = match w {
+            Which::Live => live,
+            Which::Replay => match replay.as_mut() {
+                Some(r) => &mut r.view,
+                None => return,
+            },
+        };
+        view.select_run(run_id, store.as_deref(), retired);
+        view.inspector_tab = InspectorTab::Output;
+        cx.notify();
+    }
+
     fn render_run_row(&mut self, w: Which, row: &ListRow, cx: &mut Context<Self>) -> AnyElement {
         let run_index = match *row {
             ListRow::Header(ri) | ListRow::Counts(ri) | ListRow::Test(ri, _) | ListRow::Note(ri, _, _) => Some(ri),
@@ -1698,14 +1921,11 @@ impl TestudoApp {
                             .cursor_pointer()
                             .hover(|d| d.bg(theme.list_hover))
                             .child(run.label.clone())
-                            .tooltip(tooltip_text("show this run's output"))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(v) = this.view_mut(w) {
-                                    v.selected_run = Some(run_id.clone());
-                                    v.inspector_tab = InspectorTab::Output;
-                                }
-                                cx.notify();
-                            })),
+                            .tooltip(tooltip_text(match w {
+                                Which::Live => "show this run's results and output",
+                                Which::Replay => "show this run's output",
+                            }))
+                            .on_click(cx.listener(move |this, _, _, cx| this.select_run(w, &run_id, cx))),
                     )
                     .child(pill(status, tone(tn, cx)));
                 if w == Which::Live {
@@ -1719,14 +1939,27 @@ impl TestudoApp {
                                 cx.notify();
                             }),
                         ));
-                    } else if !run.is_running() && self.store.is_some() {
-                        let id = run.id.clone();
-                        header = header.child(button(("replay", ri)).label("Replay").xsmall().ghost().on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                this.open_replay(&id);
-                                cx.notify();
-                            }),
-                        ));
+                    } else if !run.is_running() {
+                        if matches!(run.runner.as_str(), "playwright" | "vitest") {
+                            let id = run.id.clone();
+                            header = header.child(
+                                button(("rerun-run", ri))
+                                    .icon(media_icon("rotate-ccw"))
+                                    .xsmall()
+                                    .ghost()
+                                    .tooltip("Run this suite again, with the same arguments")
+                                    .on_click(cx.listener(move |this, _, _, cx| this.rerun_run(w, &id, cx))),
+                            );
+                        }
+                        if self.store.is_some() {
+                            let id = run.id.clone();
+                            header = header.child(button(("replay", ri)).label("Replay").xsmall().ghost().on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    this.open_replay(&id);
+                                    cx.notify();
+                                }),
+                            ));
+                        }
                     }
                 }
                 header.into_any_element()
@@ -1737,8 +1970,12 @@ impl TestudoApp {
                 };
                 let (passed, failed, running, pending) = run.counts();
                 let total = run.total_tests.map(|t| format!(" of {t}")).unwrap_or_default();
+                let run_id = run.id.clone();
                 line()
+                    .id(("counts", ri))
                     .gap_1()
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| this.select_run(w, &run_id, cx)))
                     .when(passed > 0, |d| d.child(pill(format!("✔ {passed}"), theme.green)))
                     .when(failed > 0, |d| d.child(pill(format!("✘ {failed}"), theme.red)))
                     .when(running > 0, |d| d.child(pill(format!("⏳ {running}"), theme.blue)))
@@ -1771,7 +2008,7 @@ impl TestudoApp {
                 let detail = {
                     let mut lines = vec![t.title_path.join(" › ")];
                     if let Some(f) = &t.file {
-                        lines.push(format!("{f}:{}", t.line.unwrap_or(0)));
+                        lines.push(with_line(f, t.line));
                     }
                     lines.join("\n")
                 };
@@ -1836,9 +2073,9 @@ impl TestudoApp {
                                     _ => '·',
                                 })
                                 .collect();
-                            text.push_str(&format!("\n\nlast {} runs (oldest → newest): {strip}", history.len()));
+                            text.push_str(&format!("\n\nlast {} runs, oldest first: {strip}", history.len()));
                             if strip.contains('✔') && strip.contains('✘') {
-                                text.push_str("\nflaky: both passes and failures in recent history");
+                                text.push_str("\nflaky: passed in some recent runs and failed in others");
                             }
                         }
                         Tooltip::new(text).build(window, cx)
@@ -1889,12 +2126,25 @@ impl TestudoApp {
         let Some(view) = self.view(w) else {
             return div().into_any_element();
         };
+        if let Some(log) = view.log_focus.clone() {
+            return self.render_log(w, &log, cx);
+        }
         let muted = cx.theme().muted_foreground;
-        let pages = ordered_pages(&view.model);
-        if pages.is_empty() {
-            let hint = match w {
-                Which::Live => "Live browser pages appear here as suites open them.",
-                Which::Replay => "No browser pages open at this point in the run.",
+        // Live shows the selected run's results; a replay holds one run.
+        let (run, now) = match w {
+            Which::Live => (view.selected_run.clone(), now_ms()),
+            Which::Replay => (None, self.replay.as_ref().map_or(0.0, |r| r.t)),
+        };
+        let grid = grid_tiles(&view.model, run.as_deref(), view.hide_completed, now);
+        if grid.waiting && w == Which::Live {
+            self.recheck_grid(cx);
+        }
+        if grid.tiles.is_empty() {
+            let hint = match (grid.hidden, w) {
+                (1, _) => "1 completed test hidden.".to_owned(),
+                (n, _) if n > 0 => format!("{n} completed tests hidden."),
+                (_, Which::Live) => "Tests appear here as the selected run starts them.".to_owned(),
+                (_, Which::Replay) => "No tests running at this point in the run.".to_owned(),
             };
             return div()
                 .size_full()
@@ -1909,7 +2159,7 @@ impl TestudoApp {
         // re-renders when that size changes the grid. The space panes get is
         // the panel less its padding (pl_2/py_2) and the scrollbar gutter;
         // panes are gap_2 apart. Both are 0.5rem, so they follow rem size.
-        let n = pages.len();
+        let n = grid.tiles.len();
         let grid_for = move |panel: Bounds<Pixels>, window: &Window| {
             let space = f32::from(window.rem_size()) * 0.5;
             pane_grid(
@@ -1939,133 +2189,40 @@ impl TestudoApp {
         )
         .absolute()
         .inset_0();
-        let selected = view.selected_page.clone();
-        let mut cells = Vec::with_capacity(n);
-        let theme = cx.theme().clone();
-        for page in pages {
-            let test = view.model.test_for_page(page);
-            let status = test.and_then(|t| t.status);
-            let (_, tn) = status_icon(status);
-            let is_selected = selected.as_ref() == Some(&page.key);
-            let key = page.key.clone();
-            let title = pane_name(&view.model, page).to_owned();
-            let closed = page.closed_at.is_some();
-            let live = w == Which::Live && !closed;
-            let frame = page.frame.clone();
-            // A skipped test's page usually never left about:blank: say so rather
-            // than showing a white tile that looks broken.
-            let skipped = (status == Some(testudo_protocol::TestStatus::Skipped))
-                .then(|| test.and_then(|t| t.note.clone()).unwrap_or_default());
-            // The status a pane shows: its test's, or "Closed" for a finished page
-            // outside a test.
-            let (label, color) = match (status, closed) {
-                (None, true) => ("Closed", muted),
-                _ => (status_label(status), tone(tn, cx)),
-            };
-            cells.push(
-                div()
-                    // Keyed by page, not position: panes reorder as tests finish.
-                    .id(ElementId::Name(
-                        format!("pane-{}-{}", page.key.run_id, page.key.page_id).into(),
-                    ))
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(if is_selected { theme.blue } else { theme.border })
-                    .bg(theme.secondary.opacity(0.5))
-                    .cursor_pointer()
-                    .hover(|d| d.border_color(theme.muted_foreground))
-                    // The frame fits the tile above the label bar (status pills
-                    // sit on top of it).
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .right_0()
-                            .bottom(px(TILE_LABEL_H))
-                            .when(closed, |d| d.opacity(0.7))
-                            .when(skipped.is_some(), |d| d.opacity(0.15))
-                            .child(match frame {
-                                Some(f) => frame_img(f).into_any_element(),
-                                None => div()
-                                    .size_full()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_sm()
-                                    .text_color(muted)
-                                    .child("waiting for frames…")
-                                    .into_any_element(),
-                            }),
-                    )
-                    .when_some(skipped.clone(), |d, note| d.child(skip_card(note, &theme)))
-                    .child(
-                        h_flex()
-                            .absolute()
-                            .top_2()
-                            .left_2()
-                            .gap_1()
-                            .child(pill(label, color).bg(theme.background.opacity(0.85)))
-                            .when(live, |d| {
-                                d.child(pill("● LIVE", theme.red).bg(theme.background.opacity(0.85)))
-                            }),
-                    )
-                    .child(
-                        v_flex()
-                            .absolute()
-                            .bottom_0()
-                            .left_0()
-                            .right_0()
-                            .h(px(TILE_LABEL_H))
-                            .justify_center()
-                            .px_2()
-                            .bg(theme.background.opacity(0.82))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(title.clone()),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_xs()
-                                    .text_color(muted)
-                                    .child(url_path(&page.url).to_owned()),
-                            ),
-                    )
-                    .tooltip(tooltip_text(match &skipped {
-                        Some(note) if !note.is_empty() => {
-                            format!("{title}\nskipped: {}\nclick to open", summary_line(note))
-                        }
-                        _ => format!(
-                            "{title}\n{}\nclick to open: watch live, or scrub the recording",
-                            page.url
-                        ),
-                    }))
-                    .on_click(cx.listener(move |this, _, window, cx| this.open_focus(w, key.clone(), window, cx))),
-            );
-        }
         // Fixed-height rows, so panes stop shrinking once the panel is full
-        // and the rest (finished pages: live ones sort first) scroll.
-        let mut rows = v_flex().gap_2();
-        let mut it = cells.into_iter().peekable();
-        while it.peek().is_some() {
-            let mut row = h_flex().items_stretch().flex_none().h(px(layout.tile_h)).gap_2();
-            for _ in 0..layout.cols {
-                row = match it.next() {
-                    Some(cell) => row.child(cell),
-                    None => row.child(div().flex_1()),
-                };
-            }
-            rows = rows.child(row);
-        }
+        // and the rest (finished tests: running ones sort first) scroll.
+        // Virtualized: a plain Vitest run can have hundreds of tiles.
+        let space = f32::from(window.rem_size()) * 0.5;
+        let (cols, tile_h) = (layout.cols, layout.tile_h);
+        let tiles = Rc::new(grid.tiles);
+        let list = uniform_list(
+            ("pages", w as usize),
+            n.div_ceil(cols),
+            cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                range
+                    .map(|r| {
+                        let mut row = h_flex()
+                            .w_full()
+                            .items_stretch()
+                            .h(px(tile_h + space))
+                            .pb(px(space))
+                            .gap_2();
+                        for c in 0..cols {
+                            row = match tiles.get(r * cols + c) {
+                                Some(tile) => row.child(this.render_tile(w, tile, tile_h, cx)),
+                                None => row.child(div().flex_1()),
+                            };
+                        }
+                        row
+                    })
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .track_scroll(&self.pages_scroll[w as usize])
+        .size_full()
+        .pl_2()
+        .pt_2()
+        .pr(px(SCROLLBAR_GUTTER));
         // The scroll area owns the whole panel, so its scrollbar sits against
         // the panel's edge; the padding and gutter are inside it.
         div()
@@ -2073,17 +2230,452 @@ impl TestudoApp {
             .size_full()
             .child(measure)
             .child(
-                div().absolute().inset_0().child(
-                    div()
-                        .size_full()
-                        .pl_2()
-                        .py_2()
-                        .pr(px(SCROLLBAR_GUTTER))
-                        .child(rows)
-                        .overflow_y_scrollbar()
-                        .id(("pages-scroll", w as usize)),
-                ),
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(list)
+                    .vertical_scrollbar(&self.pages_scroll[w as usize]),
             )
+            .into_any_element()
+    }
+
+    /// A running test may open its page any moment: draw the grid again once
+    /// the grace period is over, so a test without one gets its terminal tile.
+    fn recheck_grid(&mut self, cx: &mut Context<Self>) {
+        if self.grid_recheck {
+            return;
+        }
+        self.grid_recheck = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(250)).await;
+            let _ = this.update(cx, |app, cx| {
+                app.grid_recheck = false;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn render_tile(&mut self, w: Which, tile: &Tile, tile_h: f32, cx: &mut Context<Self>) -> AnyElement {
+        match tile {
+            Tile::Page(key) => self.page_tile(w, key, cx),
+            Tile::Terminal { run, test } => self.terminal_tile(w, *run, *test, tile_h, cx),
+            Tile::File { run, tests } => self.file_tile(w, *run, tests, tile_h, cx),
+        }
+    }
+
+    fn page_tile(&mut self, w: Which, key: &PageKey, cx: &mut Context<Self>) -> AnyElement {
+        let Some(view) = self.view(w) else {
+            return div().flex_1().into_any_element();
+        };
+        let Some(page) = view.model.pages.get(key) else {
+            return div().flex_1().into_any_element();
+        };
+        let muted = cx.theme().muted_foreground;
+        let theme = cx.theme().clone();
+        let test = view.model.test_for_page(page);
+        let status = test.and_then(|t| t.status);
+        let (_, tn) = status_icon(status);
+        let is_selected = view.selected_page.as_ref() == Some(&page.key);
+        let key = page.key.clone();
+        let title = pane_name(&view.model, page).to_owned();
+        let closed = page.closed_at.is_some();
+        let live = w == Which::Live && !closed;
+        let frame = page.frame.clone();
+        // A skipped test's page usually never left about:blank: say so rather
+        // than showing a white tile that looks broken.
+        let skipped = (status == Some(testudo_protocol::TestStatus::Skipped))
+            .then(|| test.and_then(|t| t.note.clone()).unwrap_or_default());
+        // The status a pane shows: its test's, or "Closed" for a finished page
+        // outside a test.
+        let (label, color) = match (status, closed) {
+            (None, true) => ("Closed", muted),
+            _ => (status_label(status), tone(tn, cx)),
+        };
+        div()
+            // Keyed by page, not position: panes reorder as tests finish.
+            .id(ElementId::Name(
+                format!("pane-{}-{}", page.key.run_id, page.key.page_id).into(),
+            ))
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .overflow_hidden()
+            .rounded_md()
+            .border_1()
+            .border_color(if is_selected { theme.blue } else { theme.border })
+            .bg(theme.secondary.opacity(0.5))
+            .cursor_pointer()
+            .hover(|d| d.border_color(theme.muted_foreground))
+            // The frame fits the tile above the label bar (status pills
+            // sit on top of it).
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .bottom(px(TILE_LABEL_H))
+                    .when(closed, |d| d.opacity(0.7))
+                    .when(skipped.is_some(), |d| d.opacity(0.15))
+                    .child(match frame {
+                        Some(f) => frame_img(f).into_any_element(),
+                        None => div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_sm()
+                            .text_color(muted)
+                            .child("waiting for frames…")
+                            .into_any_element(),
+                    }),
+            )
+            .when_some(skipped.clone(), |d, note| d.child(skip_card(note, &theme)))
+            .child(
+                h_flex()
+                    .absolute()
+                    .top_2()
+                    .left_2()
+                    .gap_1()
+                    .child(pill(label, color).bg(theme.background.opacity(0.85)))
+                    .when(live, |d| {
+                        d.child(pill("● LIVE", theme.red).bg(theme.background.opacity(0.85)))
+                    }),
+            )
+            .child(
+                v_flex()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(TILE_LABEL_H))
+                    .justify_center()
+                    .px_2()
+                    .bg(theme.background.opacity(0.82))
+                    .child(
+                        div()
+                            .truncate()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(title.clone()),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(url_path(&page.url).to_owned()),
+                    ),
+            )
+            .tooltip(tooltip_text(match &skipped {
+                Some(note) if !note.is_empty() => {
+                    format!("{title}\nskipped: {}\nclick to open", summary_line(note))
+                }
+                _ => format!(
+                    "{title}\n{}\nclick to open, then watch live or scrub the recording",
+                    page.url
+                ),
+            }))
+            .on_click(cx.listener(move |this, _, window, cx| this.open_focus(w, key.clone(), window, cx)))
+            .into_any_element()
+    }
+
+    /// The whole log of a page-less tile (a Vitest file, or one test), in
+    /// place of the grid: every test's result, output and full error.
+    fn render_log(&mut self, w: Which, log: &LogFocus, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let muted = theme.muted_foreground;
+        let Some(view) = self.view(w) else {
+            return div().into_any_element();
+        };
+        let tests = log_tests(&view.model, log);
+        let (title, path) = match (log, tests.first()) {
+            (LogFocus::File { file, .. }, _) => (file.rsplit('/').next().unwrap_or(file).to_owned(), file.clone()),
+            (LogFocus::Test { .. }, Some(t)) => (
+                t.title.clone(),
+                t.file.as_deref().map(|f| with_line(f, t.line)).unwrap_or_default(),
+            ),
+            (LogFocus::Test { test_id, .. }, None) => (test_id.clone(), String::new()),
+        };
+        let status = match log {
+            LogFocus::File { .. } => file_status(&tests),
+            LogFocus::Test { .. } => tests.first().and_then(|t| t.status),
+        };
+        let (_, tn) = status_icon(status);
+        let lines = log_lines(&tests);
+        let copy: String = lines.iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>().join("\n");
+        let color = |k: TermKind| match k {
+            TermKind::Stdout => theme.foreground,
+            TermKind::Stderr => theme.yellow,
+            TermKind::Passed => theme.green,
+            TermKind::Step | TermKind::Note => muted,
+            TermKind::StepFailed | TermKind::Error => theme.red,
+        };
+        let header = h_flex()
+            .gap_2()
+            .items_center()
+            .px_2()
+            .py_1()
+            .child(
+                button("log-back")
+                    .icon(IconName::ArrowLeft)
+                    .label("All tests")
+                    .small()
+                    .ghost()
+                    .tooltip("Esc")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(v) = this.view_mut(w) {
+                            v.log_focus = None;
+                        }
+                        cx.notify();
+                    })),
+            )
+            .child(pill(status_label(status), tone(tn, cx)))
+            .child(
+                div()
+                    .flex_none()
+                    .max_w(relative(0.5))
+                    .truncate()
+                    .text_base()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(title),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(path),
+            )
+            .child(
+                button("log-copy")
+                    .icon(IconName::Copy)
+                    .label("Copy")
+                    .small()
+                    .ghost()
+                    .tooltip("Copy the whole log")
+                    .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))),
+            );
+        let body = v_flex()
+            .id(("log-body", w as usize))
+            .flex_1()
+            .min_h_0()
+            .px_3()
+            .py_2()
+            .bg(theme.background)
+            .font_family(crate::fonts::mono())
+            .text_xs()
+            .children(lines.into_iter().map(|(k, text)| {
+                div()
+                    .min_h(px(TERM_LINE_H))
+                    .whitespace_normal()
+                    .text_color(color(k))
+                    .child(text)
+            }))
+            .overflow_y_scrollbar();
+        v_flex()
+            .size_full()
+            .child(header)
+            .child(Separator::horizontal())
+            .child(body)
+            .into_any_element()
+    }
+
+    /// A test without a browser page: what it printed (or its steps), its
+    /// error, in a terminal-like tile. A failing one opens its whole error
+    /// under the run list.
+    fn terminal_tile(&mut self, w: Which, ri: usize, ti: usize, tile_h: f32, cx: &mut Context<Self>) -> AnyElement {
+        let Some(t) = self
+            .view(w)
+            .and_then(|v| v.model.runs.get(ri))
+            .and_then(|r| r.tests.get(ti))
+        else {
+            return div().flex_1().into_any_element();
+        };
+        let failing = t.error.is_some();
+        let log = LogFocus::Test {
+            run_id: self.view(w).map(|v| v.model.runs[ri].id.clone()).unwrap_or_default(),
+            test_id: t.id.clone(),
+        };
+        let tip = {
+            let mut lines = vec![t.title_path.join(" › ")];
+            if let Some(f) = &t.file {
+                lines.push(with_line(f, t.line));
+            }
+            lines.push("This test opened no browser page, so the tile shows its output".into());
+            lines.push("click to read the whole log".into());
+            lines.join("\n")
+        };
+        let tile = TermTile {
+            id: format!("term-{ri}-{}", t.id),
+            lines: terminal_lines(t, term_lines_for(tile_h)),
+            bottom_aligned: true,
+            status: t.status,
+            tag: "output",
+            title: t.title.clone(),
+            subtitle: t
+                .file
+                .as_ref()
+                .map(|f| with_line(f.rsplit('/').next().unwrap_or(f), t.line))
+                .unwrap_or_default(),
+            tip,
+            errors: failing.then(|| t.id.clone()).into_iter().collect(),
+            log,
+        };
+        self.term_frame(w, tile, cx)
+    }
+
+    /// A Vitest test file: its tests with their results, output and errors.
+    /// Clicking a failing file opens its failures' errors under the run list.
+    fn file_tile(&mut self, w: Which, ri: usize, tests: &[usize], tile_h: f32, cx: &mut Context<Self>) -> AnyElement {
+        let Some(run) = self.view(w).and_then(|v| v.model.runs.get(ri)) else {
+            return div().flex_1().into_any_element();
+        };
+        let members: Vec<&crate::model::Test> = tests.iter().filter_map(|&ti| run.tests.get(ti)).collect();
+        let Some(file) = members.first().and_then(|t| t.file.clone()) else {
+            return div().flex_1().into_any_element();
+        };
+        let count = |f: &dyn Fn(&crate::model::Test) -> bool| members.iter().filter(|t| f(t)).count();
+        let failed = count(&|t| {
+            t.error.is_some()
+                || matches!(
+                    t.status,
+                    Some(testudo_protocol::TestStatus::Failed | testudo_protocol::TestStatus::TimedOut)
+                )
+        });
+        let done = count(&|t| t.status.is_some());
+        let mut summary = vec![if done < members.len() {
+            format!("{done}/{} tests", members.len())
+        } else {
+            format!("{} tests", members.len())
+        }];
+        if failed > 0 {
+            summary.push(format!("{failed} failed"));
+        }
+        let total_ms: f64 = members.iter().filter_map(|t| t.duration_ms).sum();
+        if total_ms > 0.0 {
+            summary.push(fmt_dur(total_ms));
+        }
+        let summary = summary.join(" · ");
+        let errors: Vec<String> = members
+            .iter()
+            .filter(|t| t.error.is_some())
+            .map(|t| t.id.clone())
+            .collect();
+        let tip = [file.as_str(), summary.as_str(), "click to read the whole log"].join("\n");
+        let log = LogFocus::File {
+            run_id: run.id.clone(),
+            file: file.clone(),
+        };
+        let tile = TermTile {
+            id: format!("file-{ri}-{file}"),
+            lines: file_lines(&members, term_lines_for(tile_h)),
+            bottom_aligned: false,
+            status: file_status(&members),
+            tag: "file",
+            title: file.rsplit('/').next().unwrap_or(&file).to_owned(),
+            subtitle: summary,
+            tip,
+            errors,
+            log,
+        };
+        self.term_frame(w, tile, cx)
+    }
+
+    /// The terminal-like frame of a page-less tile: lines in a mono font,
+    /// status and kind pills on top, title and subtitle below.
+    fn term_frame(&mut self, w: Which, tile: TermTile, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let muted = theme.muted_foreground;
+        let (_, tn) = status_icon(tile.status);
+        let color = |k: TermKind| match k {
+            TermKind::Stdout => theme.foreground,
+            TermKind::Stderr => theme.yellow,
+            TermKind::Passed => theme.green,
+            TermKind::Step | TermKind::Note => muted,
+            TermKind::StepFailed | TermKind::Error => theme.red,
+        };
+        let expanded = self
+            .view(w)
+            .is_some_and(|v| tile.errors.iter().any(|id| v.expanded_tests.contains(id)));
+        let log = tile.log;
+        div()
+            .id(ElementId::Name(tile.id.into()))
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .overflow_hidden()
+            .rounded_md()
+            .border_1()
+            .border_color(if expanded { theme.blue } else { theme.border })
+            .bg(theme.secondary.opacity(0.5))
+            .cursor_pointer()
+            .hover(|d| d.border_color(theme.muted_foreground))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if let Some(v) = this.view_mut(w) {
+                    v.log_focus = Some(log.clone());
+                }
+                // Esc closes it (the app's key context).
+                window.focus(&this.focus_handle, cx);
+                cx.notify();
+            }))
+            .child(
+                v_flex()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .bottom(px(TILE_LABEL_H))
+                    .when(tile.bottom_aligned, |d| d.justify_end())
+                    .overflow_hidden()
+                    .pt(px(TERM_TOP))
+                    .px_2()
+                    .bg(theme.background)
+                    .font_family(crate::fonts::mono())
+                    .text_xs()
+                    .children(tile.lines.into_iter().map(|(k, text)| {
+                        div()
+                            .flex_none()
+                            .h(px(TERM_LINE_H))
+                            .truncate()
+                            .text_color(color(k))
+                            .child(text)
+                    })),
+            )
+            .child(
+                h_flex()
+                    .absolute()
+                    .top_2()
+                    .left_2()
+                    .gap_1()
+                    .child(pill(status_label(tile.status), tone(tn, cx)).bg(theme.background.opacity(0.85)))
+                    .child(pill(tile.tag, muted).bg(theme.background.opacity(0.85))),
+            )
+            .child(
+                v_flex()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(TILE_LABEL_H))
+                    .justify_center()
+                    .px_2()
+                    .bg(theme.background.opacity(0.82))
+                    .child(
+                        div()
+                            .truncate()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(tile.title),
+                    )
+                    .child(div().truncate().text_xs().text_color(muted).child(tile.subtitle)),
+            )
+            .tooltip(tooltip_text(tile.tip))
             .into_any_element()
     }
 
@@ -2322,7 +2914,7 @@ impl TestudoApp {
                     .xsmall()
                     .when(follow, |b| b.primary())
                     .when(!follow, |b| b.ghost())
-                    .tooltip("Follow new output (turns off when you scroll up)")
+                    .tooltip("Follow new output. Scrolling up turns this off")
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(v) = this.view_mut(w) {
                             v.output_follow = !v.output_follow;
@@ -2630,7 +3222,9 @@ impl TestudoApp {
                 .id(id)
                 .flex_1()
                 .min_w_0()
-                .h(px(76.))
+                // Sized by content (rows never shrink), so text isn't clipped
+                // whatever the font size; the row stretches all three alike.
+                .min_h(px(76.))
                 .p_2()
                 .gap_px()
                 .rounded_md()
@@ -2638,8 +3232,22 @@ impl TestudoApp {
                 .border_color(theme.border)
                 .bg(theme.secondary.opacity(0.35))
         };
-        let caption = |t: &str| div().text_xs().text_color(muted).truncate().child(t.to_owned());
-        let big = |t: String, c: Hsla| div().text_lg().font_weight(FontWeight::SEMIBOLD).text_color(c).child(t);
+        let caption = |t: &str| {
+            div()
+                .flex_none()
+                .text_xs()
+                .text_color(muted)
+                .truncate()
+                .child(t.to_owned())
+        };
+        let big = |t: String, c: Hsla| {
+            div()
+                .flex_none()
+                .text_lg()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(c)
+                .child(t)
+        };
 
         let flaky_detail = if self.flaky.is_empty() {
             "No test both passed and failed in the recent runs.".to_owned()
@@ -2675,6 +3283,8 @@ impl TestudoApp {
         let spark_n = spark.len();
 
         h_flex()
+            .flex_none()
+            .items_stretch()
             .gap_2()
             .child(
                 card("sum-rate")
@@ -2715,11 +3325,12 @@ impl TestudoApp {
                                 }
                             },
                         )
+                        .flex_none()
                         .w_full()
                         .h(px(26.)),
                     )
                     .tooltip(tooltip_text(format!(
-                        "duration of the last {spark_n} runs, oldest → newest; colour = result"
+                        "Duration of the last {spark_n} runs, oldest first. The colour shows each run's result"
                     ))),
             )
     }
@@ -2762,7 +3373,7 @@ impl TestudoApp {
             .collect();
         let cursor = frac(replay.t);
         let cell = self.timeline_scrub.clone();
-        let (playing, speed, keep) = (replay.playing, replay.speed, replay.view.keep_closed_pages);
+        let (playing, speed, hide_completed) = (replay.playing, replay.speed, replay.view.hide_completed);
         let time = format!(
             "{} / {}",
             fmt_secs(replay.t - replay.start),
@@ -2826,13 +3437,14 @@ impl TestudoApp {
                     }))
                     .child(div().font_family(crate::fonts::mono()).text_sm().child(time))
                     .child(
-                        Checkbox::new("tl-keep")
+                        Checkbox::new("tl-hide-completed")
                             .cursor_pointer()
-                            .label("Keep closed pages")
-                            .checked(keep)
+                            .label("Hide completed")
+                            .tooltip("Leave completed tests out of the grid, except failures")
+                            .checked(hide_completed)
                             .on_click(cx.listener(|this, checked: &bool, _, cx| {
                                 if let Some(r) = this.replay.as_mut() {
-                                    r.view.keep_closed_pages = *checked;
+                                    r.view.hide_completed = *checked;
                                 }
                                 cx.notify();
                             })),
@@ -2945,7 +3557,8 @@ enum NoteKind {
 
 /// Runs newest first; each test followed by its notes (current step, skip
 /// reason, first error line). Whole errors open in the panel under the list.
-fn run_rows(view: &PagesView) -> Vec<ListRow> {
+/// `only_running` leaves out tests that are pending or finished.
+fn run_rows(view: &PagesView, only_running: bool) -> Vec<ListRow> {
     let mut rows = Vec::new();
     for (ri, run) in view.model.runs.iter().enumerate().rev() {
         rows.push(ListRow::Header(ri));
@@ -2956,6 +3569,9 @@ fn run_rows(view: &PagesView) -> Vec<ListRow> {
         }
         // Running, pending, failed, complete; by name within each.
         let mut order: Vec<usize> = (0..run.tests.len()).collect();
+        if only_running {
+            order.retain(|&ti| !run.tests[ti].queued && run.tests[ti].status.is_none());
+        }
         order.sort_by_cached_key(|&ti| test_order(&run.tests[ti]));
         for ti in order {
             let t = &run.tests[ti];
@@ -2988,4 +3604,26 @@ fn toggle_error(
         }
         cx.notify();
     }
+}
+
+/// What a page-less tile shows (see `term_frame`).
+struct TermTile {
+    id: String,
+    lines: Vec<(TermKind, String)>,
+    /// Lines sit at the bottom, like a terminal (else from the top).
+    bottom_aligned: bool,
+    status: Option<testudo_protocol::TestStatus>,
+    tag: &'static str,
+    title: String,
+    subtitle: String,
+    tip: String,
+    /// Tests whose errors are open under the run list (the border shows it).
+    errors: Vec<String>,
+    /// The log a click opens.
+    log: LogFocus,
+}
+
+/// How many terminal lines fit in a tile `tile_h` tall.
+fn term_lines_for(tile_h: f32) -> usize {
+    ((tile_h - TILE_LABEL_H - TERM_TOP) / TERM_LINE_H).floor().max(1.0) as usize
 }

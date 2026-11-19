@@ -153,6 +153,13 @@ pub enum Event {
     RunEnd {
         status: String,
     },
+    /// Output the runner attributes to one test (Playwright's per-test
+    /// stdout/stderr, Vitest's console logs). May be several lines.
+    TestOutput {
+        test_id: String,
+        stream: StdStream,
+        text: String,
+    },
 
     // --- browser instrumentation (preload / cdp) ---
     PageOpened {
@@ -207,6 +214,11 @@ pub enum Event {
         cwd: String,
         #[serde(default)]
         args: Vec<String>,
+        /// The args the user gave (the runner args box, or a re-run's own),
+        /// without the project config's: what a re-run passes again. None in
+        /// runs recorded before this was kept.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_args: Option<Vec<String>>,
     },
     Stdio {
         stream: StdStream,
@@ -363,6 +375,23 @@ mod tests {
         let json = br#"{"type":"pageOpened","pageId":"1-0","testId":"t1","browser":"chromium"}"#;
         let ev: Event = serde_json::from_slice(json).unwrap();
         assert!(matches!(ev, Event::PageOpened { ref page_id, .. } if page_id == "1-0"));
+    }
+
+    #[test]
+    fn test_output_parses() {
+        let json = br#"{"type":"testOutput","testId":"t1","stream":"stderr","text":"oops\n"}"#;
+        let ev: Event = serde_json::from_slice(json).unwrap();
+        assert!(matches!(ev, Event::TestOutput { stream: StdStream::Stderr, ref text, .. } if text == "oops\n"));
+    }
+
+    #[test]
+    fn run_started_user_args_are_optional() {
+        let old = br#"{"type":"runStarted","label":"l","runner":"vitest","cwd":"/p","args":["--x"]}"#;
+        let ev: Event = serde_json::from_slice(old).unwrap();
+        assert!(matches!(ev, Event::RunStarted { user_args: None, .. }));
+        let new = br#"{"type":"runStarted","label":"l","runner":"vitest","cwd":"/p","userArgs":["--y"]}"#;
+        let ev: Event = serde_json::from_slice(new).unwrap();
+        assert!(matches!(ev, Event::RunStarted { user_args: Some(ref a), .. } if a == &["--y"]));
     }
 
     #[test]

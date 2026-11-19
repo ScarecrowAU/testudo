@@ -64,6 +64,17 @@ export default class TestudoVitestReporter {
     });
   }
 
+  // console.log and friends, attributed to the test (or suite) that logged.
+  onUserConsoleLog(log) {
+    if (!log?.taskId || !log.content) return;
+    this.t.send({
+      type: 'testOutput',
+      testId: log.taskId,
+      stream: log.type === 'stderr' ? 'stderr' : 'stdout',
+      text: plain(String(log.content)),
+    });
+  }
+
   async onTestRunEnd(_modules, _errors, reason) {
     this.t.send({ type: 'runEnd', status: reason });
     // Flush, don't close: in watch mode another run follows on the same connection.

@@ -64,7 +64,7 @@ impl SettingsPanel {
         });
         self.status = match result {
             Ok(Ok(())) => None,
-            Ok(Err(e)) => Some(format!("Could not save settings: {e:#}")),
+            Ok(Err(e)) => Some(format!("Couldn't save settings: {e:#}")),
             Err(_) => None,
         };
         cx.notify();
@@ -132,7 +132,7 @@ impl SettingsPanel {
             None => "Delete all recordings?".to_owned(),
         };
         let detail = format!(
-            "{count} finished run{} and their history will be removed. Runs in progress are kept. This can't be undone.",
+            "This deletes {count} finished run{} and their history. Runs in progress are kept. This can't be undone.",
             if count == 1 { "" } else { "s" }
         );
         let panel = cx.entity().downgrade();
