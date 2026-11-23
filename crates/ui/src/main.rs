@@ -116,19 +116,7 @@ fn main() -> Result<()> {
         Theme::set_scrollbar_mode(gpui_kit::component::scroll::ScrollbarMode::Always, cx);
         app::bind_keys(cx);
 
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                None,
-                size(px(1400.), px(900.)),
-                cx,
-            ))),
-            titlebar: Some(TitlebarOptions {
-                title: Some("Testudo".into()),
-                ..Default::default()
-            }),
-            app_id: Some("testudo".into()),
-            ..Default::default()
-        };
+        let options = app::titlebar::window_options(cx);
         let startup = startup.clone();
         let opened = gpui_kit::open_window(options, cx, move |window, cx| {
             let s = startup.take().expect("window opened once");
