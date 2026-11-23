@@ -49,6 +49,7 @@ use crate::state::{InspectorTab, LogFocus, PageFocus, PagesView, Replay, Retired
 mod focus;
 mod settings;
 mod tables;
+pub mod titlebar;
 mod update;
 
 const HISTORY_LIMIT: usize = 200;
@@ -1489,10 +1490,16 @@ impl Render for TestudoApp {
         if self.perf.frame_end(frame_start, ctx) {
             window.request_animation_frame();
         }
+        let radii = gpui_kit::component::window_corner_radii(window, cx);
         let mut root = v_flex();
         root.text_style().font_fallbacks = crate::fonts::fallbacks();
         root.id("testudo")
             .size_full()
+            .rounded_tl(radii.top_left)
+            .rounded_tr(radii.top_right)
+            .rounded_bl(radii.bottom_left)
+            .rounded_br(radii.bottom_right)
+            .overflow_hidden()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .key_context("PageFocus")
@@ -1517,21 +1524,17 @@ impl Render for TestudoApp {
 }
 
 impl TestudoApp {
-    fn render_top_bar(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_top_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mode = self.mode;
-        h_flex()
+        let brand = h_flex()
             .gap_2()
-            .px_3()
-            .py_2()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(img(app_icon()).size(px(24.)).flex_none())
-                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Testudo")),
-            )
+            .items_center()
+            .child(img(app_icon()).size(px(22.)).flex_none())
+            .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child("Testudo"));
+
+        let toolbar = h_flex()
+            .gap_2()
+            .items_center()
             .child(
                 TabBar::new("mode")
                     .segmented()
@@ -1591,9 +1594,10 @@ impl TestudoApp {
                             cx.notify();
                         })),
                 )
-            })
-            .child(div().flex_1())
-            .child(self.settings_menu(cx))
+            });
+
+        let trailing = self.settings_menu(cx).into_any_element();
+        titlebar::render_titlebar(window, cx, brand, toolbar, trailing)
     }
 
     /// Gear button opening the settings dialog.
